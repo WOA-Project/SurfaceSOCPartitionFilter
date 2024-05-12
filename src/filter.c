@@ -652,6 +652,20 @@ Return Value:
 				// Data Size
 				*(ULONG*)(outputBuffer + 16) = sizeof(BT_PROVISION);
 
+				// Fill in the real BT MAC
+				BYTE BT_NV[9] = { 0 };
+
+				filterStatus = GetSFPDItem(device, BT_NV_FILE_PATH, BT_NV, sizeof(BT_NV));
+				if (NT_SUCCESS(filterStatus))
+				{
+					BT_PROVISION[2] = BT_NV[8];
+					BT_PROVISION[3] = BT_NV[7];
+					BT_PROVISION[4] = BT_NV[6];
+					BT_PROVISION[5] = BT_NV[5];
+					BT_PROVISION[6] = BT_NV[4];
+					BT_PROVISION[7] = BT_NV[3];
+				}
+
 				// File Data
 				RtlCopyMemory(outputBuffer + 20, BT_PROVISION, sizeof(BT_PROVISION));
 			}
@@ -719,7 +733,6 @@ Return Value:
 
 				if (!NT_SUCCESS(filterStatus))
 				{
-
 					ExFreePoolWithTag(outputBuffer, HID_DESCRIPTOR_POOL_TAG);
 					ExFreePoolWithTag(inputBuffer, HID_DESCRIPTOR_POOL_TAG);
 					goto exit;
@@ -786,6 +799,58 @@ Return Value:
 				// Data Size
 				*(ULONG*)(outputBuffer + 16) = sizeof(WLAN_PROVISION);
 
+				// Fill in the real BT MAC
+				BYTE WLAN_MAC[33] = { 0 };
+
+				filterStatus = GetSFPDItem(device, WLAN_MAC_FILE_PATH, WLAN_MAC, sizeof(WLAN_MAC));
+				if (NT_SUCCESS(filterStatus))
+				{
+					BYTE MAC_ADDRESS[6] = { 0 };
+
+					for (DWORD i = 0; i < sizeof(MAC_ADDRESS); i++)
+					{
+						DWORD HighIndex = 16 + i * 2;
+						DWORD LowIndex = 16 + (i * 2) + 1;
+
+						DWORD ByteHigh = WLAN_MAC[HighIndex];
+						DWORD ByteLow = WLAN_MAC[LowIndex];
+
+						if (0x30 <= ByteHigh && ByteHigh <= 0x39)
+						{
+							MAC_ADDRESS[i] |= ((ByteHigh - 0x30) << 4) & 0xF0;
+						}
+						else if (0x41 <= ByteHigh && ByteHigh <= 0x46)
+						{
+							MAC_ADDRESS[i] |= ((ByteHigh - 0x37) << 4) & 0xF0;
+						}
+						else
+						{
+							goto skip_mac;
+						}
+
+						if (0x30 <= ByteLow && ByteLow <= 0x39)
+						{
+							MAC_ADDRESS[i] |= (ByteLow - 0x30) & 0x0F;
+						}
+						else if (0x41 <= ByteLow && ByteLow <= 0x46)
+						{
+							MAC_ADDRESS[i] |= (ByteLow - 0x37) & 0x0F;
+						}
+						else
+						{
+							goto skip_mac;
+						}
+					}
+
+					WLAN_PROVISION[3] = MAC_ADDRESS[0];
+					WLAN_PROVISION[4] = MAC_ADDRESS[1];
+					WLAN_PROVISION[5] = MAC_ADDRESS[2];
+					WLAN_PROVISION[6] = MAC_ADDRESS[3];
+					WLAN_PROVISION[7] = MAC_ADDRESS[4];
+					WLAN_PROVISION[8] = MAC_ADDRESS[5];
+				}
+
+skip_mac:
 				// File Data
 				RtlCopyMemory(outputBuffer + 20, WLAN_PROVISION, sizeof(WLAN_PROVISION));
 			}
