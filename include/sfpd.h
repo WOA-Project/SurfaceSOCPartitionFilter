@@ -132,5 +132,7 @@ NTSTATUS GetSFPDPixelAlignmentData(WDFDEVICE device, PSFPD_DISPLAY_PIXEL_ALIGNME
 NTSTATUS GetSFPDVolumePath(WDFDEVICE device, WCHAR* VolumePath, DWORD VolumePathLength);
 NTSTATUS GetSFPDItemSize(WDFDEVICE device, WCHAR* ItemPath, DWORD* ItemSize);
 NTSTATUS GetSFPDItem(WDFDEVICE device, WCHAR* ItemPath, PVOID Data, DWORD DataSize);
+NTSTATUS GetSFPDNumberOfFilesInDirectory(WDFDEVICE device, WCHAR* DirectoryPath, DWORD* NumberOfFiles);
+NTSTATUS GetSFPDFilesInDirectory(WDFDEVICE device, WCHAR* DirectoryPath, DWORD NumberOfFiles, PUCHAR Buffer);
 
 EXTERN_C_END

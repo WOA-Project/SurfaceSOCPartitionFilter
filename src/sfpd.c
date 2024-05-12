@@ -18,6 +18,47 @@ Environment:
 
 #include "sfpd.h"
 
+// ntifs header is incompatible with wdm header...
+
+#if (NTDDI_VERSION >= NTDDI_WIN2K)
+_IRQL_requires_max_(PASSIVE_LEVEL)
+NTSYSAPI
+NTSTATUS
+NTAPI
+ZwQueryDirectoryFile(
+	_In_ HANDLE FileHandle,
+	_In_opt_ HANDLE Event,
+	_In_opt_ PIO_APC_ROUTINE ApcRoutine,
+	_In_opt_ PVOID ApcContext,
+	_Out_ PIO_STATUS_BLOCK IoStatusBlock,
+	_Out_writes_bytes_(Length) PVOID FileInformation,
+	_In_ ULONG Length,
+	_In_ FILE_INFORMATION_CLASS FileInformationClass,
+	_In_ BOOLEAN ReturnSingleEntry,
+	_In_opt_ PUNICODE_STRING FileName,
+	_In_ BOOLEAN RestartScan
+);
+#endif
+
+typedef struct _FILE_BOTH_DIR_INFORMATION {
+	ULONG NextEntryOffset;
+	ULONG FileIndex;
+	LARGE_INTEGER CreationTime;
+	LARGE_INTEGER LastAccessTime;
+	LARGE_INTEGER LastWriteTime;
+	LARGE_INTEGER ChangeTime;
+	LARGE_INTEGER EndOfFile;
+	LARGE_INTEGER AllocationSize;
+	ULONG FileAttributes;
+	ULONG FileNameLength;
+	ULONG EaSize;
+	CCHAR ShortNameLength;
+	WCHAR ShortName[12];
+	_Field_size_bytes_(FileNameLength) WCHAR FileName[1];
+} FILE_BOTH_DIR_INFORMATION, * PFILE_BOTH_DIR_INFORMATION;
+
+// end of workaround for ntifs
+
 NTSTATUS GetSFPDPixelAlignmentData(WDFDEVICE device, PSFPD_DISPLAY_PIXEL_ALIGNMENT_DATA PixelAlignmentData)
 {
 	NTSTATUS status = STATUS_UNSUCCESSFUL;
@@ -123,6 +164,309 @@ exit:
 	}
 
 	if (NULL != FileHandle)
+	{
+		ZwClose(FileHandle);
+	}
+
+	return status;
+}
+
+NTSTATUS GetSFPDNumberOfFilesInDirectory(WDFDEVICE device, WCHAR* DirectoryPath, DWORD* NumberOfFiles)
+{
+	NTSTATUS status = STATUS_UNSUCCESSFUL;
+
+	BOOLEAN bIsStarted = TRUE;
+	UINT uSize = sizeof(FILE_BOTH_DIR_INFORMATION);
+	FILE_BOTH_DIR_INFORMATION* pfbInfo = NULL;
+
+	HANDLE FileHandle = NULL;
+	WCHAR* FilePath = (WCHAR*)ExAllocatePoolWithTag(NonPagedPool, MAX_PATH * sizeof(WCHAR), POOL_TAG_FILEPATH);
+
+	if (NULL == FilePath)
+	{
+		status = STATUS_INSUFFICIENT_RESOURCES;
+		goto exit;
+	}
+
+	if (NULL == NumberOfFiles)
+	{
+		status = STATUS_INSUFFICIENT_RESOURCES;
+		goto exit;
+	}
+
+	*NumberOfFiles = 0;
+
+	status = GetSFPDVolumePath(device, FilePath, MAX_PATH);
+
+	if (!NT_SUCCESS(status))
+	{
+		status = STATUS_NOT_FOUND;
+		goto exit;
+	}
+
+	status = RtlStringCbCatW(FilePath, MAX_PATH * sizeof(WCHAR), DirectoryPath);
+
+	if (!NT_SUCCESS(status))
+	{
+		status = STATUS_INSUFFICIENT_RESOURCES;
+		goto exit;
+	}
+
+	UNICODE_STRING FilePathUnicode;
+	RtlInitUnicodeString(&FilePathUnicode, FilePath);
+
+	OBJECT_ATTRIBUTES Attributes = { 0 };
+	InitializeObjectAttributes(&Attributes, &FilePathUnicode, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
+
+	IO_STATUS_BLOCK IOStatusBlock = { 0 };
+
+	status = ZwCreateFile(&FileHandle, GENERIC_READ | SYNCHRONIZE, &Attributes, &IOStatusBlock, NULL, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0);
+	if (!NT_SUCCESS(status))
+	{
+		status = STATUS_FILE_NOT_AVAILABLE;
+		goto exit;
+	}
+
+	//
+	// https://community.osr.com/t/zwquerydirectoryfile-api-question-enumerating-files-in-a-directory-or-in-a-volumes/31914/3
+	//
+
+	pfbInfo = ExAllocatePoolWithTag(PagedPool, uSize, '0000');
+
+	if (pfbInfo == NULL)
+	{
+		status = STATUS_NO_MEMORY;
+		goto exit;
+	}
+
+	while (TRUE)
+	{
+	lbl_retry:
+		RtlZeroMemory(pfbInfo, uSize);
+		status = ZwQueryDirectoryFile(FileHandle, 0, NULL, NULL, &IOStatusBlock, pfbInfo,
+			uSize, FileBothDirectoryInformation, FALSE, NULL, bIsStarted);
+
+		if (STATUS_BUFFER_OVERFLOW == status)
+		{
+			ExFreePool(pfbInfo);
+
+			uSize = uSize * 2;
+			pfbInfo = ExAllocatePoolWithTag(PagedPool, uSize, '0000');
+
+			if (pfbInfo == NULL)
+			{
+				status = STATUS_NO_MEMORY;
+				goto exit;
+			}
+
+			goto lbl_retry;
+		}
+		else if (STATUS_NO_MORE_FILES == status)
+		{
+			status = STATUS_SUCCESS;
+			goto exit;
+		}
+		else if (STATUS_SUCCESS != status)
+		{
+			goto exit;
+		}
+
+		if (bIsStarted)
+		{
+			bIsStarted = FALSE;
+		}
+
+		while (TRUE)
+		{
+			// We do not want to touch directories
+			if ((pfbInfo->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != FILE_ATTRIBUTE_DIRECTORY)
+			{
+				*NumberOfFiles = *NumberOfFiles + 1;
+			}
+
+			if (pfbInfo->NextEntryOffset == 0)
+			{
+				break;
+			}
+
+			pfbInfo += pfbInfo->NextEntryOffset;
+		}
+	}
+
+exit:
+	if (pfbInfo != NULL)
+	{
+		ExFreePool(pfbInfo);
+	}
+
+	if (FilePath != NULL)
+	{
+		ExFreePool(FilePath);
+	}
+
+	if (FileHandle != NULL)
+	{
+		ZwClose(FileHandle);
+	}
+
+	return status;
+}
+
+// This function is very specifically crafted for SOCPartition, I know.
+NTSTATUS GetSFPDFilesInDirectory(WDFDEVICE device, WCHAR* DirectoryPath, DWORD NumberOfFiles, PUCHAR Buffer)
+{
+	NTSTATUS status = STATUS_UNSUCCESSFUL;
+
+	BOOLEAN bIsStarted = TRUE;
+	UINT uSize = sizeof(FILE_BOTH_DIR_INFORMATION);
+	FILE_BOTH_DIR_INFORMATION* pfbInfo = NULL;
+
+	HANDLE FileHandle = NULL;
+	WCHAR* FilePath = (WCHAR*)ExAllocatePoolWithTag(NonPagedPool, MAX_PATH * sizeof(WCHAR), POOL_TAG_FILEPATH);
+
+	if (NULL == FilePath)
+	{
+		status = STATUS_INSUFFICIENT_RESOURCES;
+		goto exit;
+	}
+
+	status = GetSFPDVolumePath(device, FilePath, MAX_PATH);
+
+	if (!NT_SUCCESS(status))
+	{
+		status = STATUS_NOT_FOUND;
+		goto exit;
+	}
+
+	status = RtlStringCbCatW(FilePath, MAX_PATH * sizeof(WCHAR), DirectoryPath);
+
+	if (!NT_SUCCESS(status))
+	{
+		status = STATUS_INSUFFICIENT_RESOURCES;
+		goto exit;
+	}
+
+	UNICODE_STRING FilePathUnicode;
+	RtlInitUnicodeString(&FilePathUnicode, FilePath);
+
+	OBJECT_ATTRIBUTES Attributes = { 0 };
+	InitializeObjectAttributes(&Attributes, &FilePathUnicode, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
+
+	IO_STATUS_BLOCK IOStatusBlock = { 0 };
+
+	status = ZwCreateFile(&FileHandle, GENERIC_READ | SYNCHRONIZE, &Attributes, &IOStatusBlock, NULL, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0);
+	if (!NT_SUCCESS(status))
+	{
+		status = STATUS_FILE_NOT_AVAILABLE;
+		goto exit;
+	}
+
+	//
+	// https://community.osr.com/t/zwquerydirectoryfile-api-question-enumerating-files-in-a-directory-or-in-a-volumes/31914/3
+	//
+
+	pfbInfo = ExAllocatePoolWithTag(PagedPool, uSize, '0000');
+
+	if (pfbInfo == NULL)
+	{
+		status = STATUS_NO_MEMORY;
+		goto exit;
+	}
+
+	DWORD CurrentNumberOfFiles = 0;
+	DWORD CurrentFileAllocation = 0;
+
+	while (TRUE)
+	{
+	lbl_retry:
+		RtlZeroMemory(pfbInfo, uSize);
+		status = ZwQueryDirectoryFile(FileHandle, 0, NULL, NULL, &IOStatusBlock, pfbInfo,
+			uSize, FileBothDirectoryInformation, FALSE, NULL, bIsStarted);
+
+		if (STATUS_BUFFER_OVERFLOW == status)
+		{
+			ExFreePool(pfbInfo);
+
+			uSize = uSize * 2;
+			pfbInfo = ExAllocatePoolWithTag(PagedPool, uSize, '0000');
+
+			if (pfbInfo == NULL)
+			{
+				status = STATUS_NO_MEMORY;
+				goto exit;
+			}
+
+			goto lbl_retry;
+		}
+		else if (STATUS_NO_MORE_FILES == status)
+		{
+			status = STATUS_SUCCESS;
+			goto exit;
+		}
+		else if (STATUS_SUCCESS != status)
+		{
+			goto exit;
+		}
+
+		if (bIsStarted)
+		{
+			bIsStarted = FALSE;
+		}
+
+		while (TRUE)
+		{
+			// We do not want to touch directories
+			if ((pfbInfo->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != FILE_ATTRIBUTE_DIRECTORY)
+			{
+				CurrentNumberOfFiles++;
+				if (CurrentNumberOfFiles > NumberOfFiles)
+				{
+					status = STATUS_NO_MEMORY;
+					goto exit;
+				}
+
+				PUCHAR FileBlockBuffer = Buffer + (CurrentNumberOfFiles - 1) * 244;
+
+				RtlCopyMemory(FileBlockBuffer, pfbInfo->FileName, min(pfbInfo->FileNameLength, 49 * sizeof(WCHAR)));
+				RtlCopyMemory(FileBlockBuffer + (49 * sizeof(WCHAR)), L"JSON", sizeof(L"JSON"));
+
+				DWORD FileSize = pfbInfo->EndOfFile.LowPart;
+				DWORD FileAllocation = FileSize;
+
+				if ((FileSize % 256) != 0)
+				{
+					FileAllocation = FileSize + (256 - (FileSize % 256));
+				}
+
+				*(DWORD*)(FileBlockBuffer + (49 * sizeof(WCHAR)) + (49 * sizeof(WCHAR))) = FileAllocation; // File Allocation
+				*(DWORD*)(FileBlockBuffer + (49 * sizeof(WCHAR)) + (49 * sizeof(WCHAR)) + 4) = FileSize; // FileSize
+				*(DWORD*)(FileBlockBuffer + (49 * sizeof(WCHAR)) + (49 * sizeof(WCHAR)) + 4 + 4) = 1; // ?, always one
+				*(DWORD*)(FileBlockBuffer + (49 * sizeof(WCHAR)) + (49 * sizeof(WCHAR)) + 4 + 4 + 4) = CurrentFileAllocation; // Offset
+
+				CurrentFileAllocation += FileAllocation;
+			}
+
+			if (pfbInfo->NextEntryOffset == 0)
+			{
+				break;
+			}
+
+			pfbInfo += pfbInfo->NextEntryOffset;
+		}
+	}
+
+exit:
+	if (pfbInfo != NULL)
+	{
+		ExFreePool(pfbInfo);
+	}
+
+	if (FilePath != NULL)
+	{
+		ExFreePool(FilePath);
+	}
+
+	if (FileHandle != NULL)
 	{
 		ZwClose(FileHandle);
 	}

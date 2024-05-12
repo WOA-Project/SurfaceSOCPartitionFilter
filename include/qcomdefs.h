@@ -72,9 +72,9 @@ typedef struct _WLAN_PROVISION_DATA
 	BYTE Length;
 	BYTE NoOfMACs;
 	BYTE StationAddress[6];
-	BYTE PeerToPeerDeviceAddress[6];
-	BYTE PeerToPeerClientGoAddress1[6];
-	BYTE PeerToPeerClientGoAddress2[6];
+	BYTE PeerToPeerDeviceAddress[6]; // Optional, depends on NoOfMacs
+	BYTE PeerToPeerClientGoAddress1[6]; // Optional, depends on NoOfMacs
+	BYTE PeerToPeerClientGoAddress2[6]; // Optional, depends on NoOfMacs
 } WLAN_PROVISION_DATA, * PWLAN_PROVISION_DATA;
 #pragma pack(pop)
 
