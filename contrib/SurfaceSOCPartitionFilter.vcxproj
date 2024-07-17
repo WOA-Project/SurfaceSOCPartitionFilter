@@ -126,6 +126,7 @@
     <FilesToPackage Include="$(TargetPath)" Condition="'$(ConfigurationType)'=='Driver' or '$(ConfigurationType)'=='DynamicLibrary'" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\src\constants.c" />
     <ClCompile Include="..\src\filter.c" />
     <ClCompile Include="..\src\sfpd.c" />
     <ClCompile Include="..\src\qcomdefs.c" />
@@ -134,6 +135,7 @@
     <ResourceCompile Include="..\src\Resource.rc" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\include\constants.h" />
     <ClInclude Include="..\include\filter.h" />
     <ClInclude Include="..\include\resource.h" />
     <ClInclude Include="..\include\trace.h" />
