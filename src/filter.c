@@ -729,7 +729,7 @@ Return Value:
 				}
 			}
 		}
-		else if (RtlCompareMemory(L"QCOM\\WLAN_PMICXO.PROVISION", FilePath, sizeof(L"QCOM\\WLAN_PMICXO.PROVISION")) == sizeof(L"QCOM\\WLAN_PMICXO.PROVISION"))
+		/*else if (RtlCompareMemory(L"QCOM\\WLAN_PMICXO.PROVISION", FilePath, sizeof(L"QCOM\\WLAN_PMICXO.PROVISION")) == sizeof(L"QCOM\\WLAN_PMICXO.PROVISION"))
 		{
 			status = STATUS_FILE_NOT_AVAILABLE;
 
@@ -924,7 +924,7 @@ skip_mac:
 				// File Data
 				RtlCopyMemory(outputBuffer + 20, WLAN_SAR2CFG_PROVISION, sizeof(WLAN_SAR2CFG_PROVISION));
 			}
-		}
+		}*/
 		else
 		{
 			// We do not support anything else currently.
@@ -1165,7 +1165,7 @@ skip_mac:
 				// File Size
 				*(ULONG*)(outputBuffer + 20) = ItemSize;
 			}
-			else if (RtlCompareMemory(L"QCOM\\WLAN_PMICXO.PROVISION", FilePath, sizeof(L"QCOM\\WLAN_PMICXO.PROVISION")) == sizeof(L"QCOM\\WLAN_PMICXO.PROVISION"))
+			/*else if (RtlCompareMemory(L"QCOM\\WLAN_PMICXO.PROVISION", FilePath, sizeof(L"QCOM\\WLAN_PMICXO.PROVISION")) == sizeof(L"QCOM\\WLAN_PMICXO.PROVISION"))
 			{
 				status = STATUS_FILE_NOT_AVAILABLE;
 
@@ -1248,7 +1248,7 @@ skip_mac:
 
 				// File Size
 				*(ULONG*)(outputBuffer + 20) = sizeof(WLAN_SAR2CFG_PROVISION);
-			}
+			}*/
 			else
 			{
 				// We do not support anything else currently.
