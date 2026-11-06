@@ -180,6 +180,7 @@ NTSTATUS GetSFPDNumberOfFilesInDirectory(WDFDEVICE device, WCHAR* DirectoryPath,
 	BOOLEAN bIsStarted = TRUE;
 	UINT uSize = sizeof(FILE_BOTH_DIR_INFORMATION);
 	FILE_BOTH_DIR_INFORMATION* pfbInfo = NULL;
+	PFILE_BOTH_DIR_INFORMATION pfbInfoBase = NULL;
 
 	HANDLE FileHandle = NULL;
 	WCHAR* FilePath = (WCHAR*)ExAllocatePoolWithTag(NonPagedPool, MAX_PATH * sizeof(WCHAR), POOL_TAG_FILEPATH);
@@ -233,7 +234,7 @@ NTSTATUS GetSFPDNumberOfFilesInDirectory(WDFDEVICE device, WCHAR* DirectoryPath,
 	// https://community.osr.com/t/zwquerydirectoryfile-api-question-enumerating-files-in-a-directory-or-in-a-volumes/31914/3
 	//
 
-	PFILE_BOTH_DIR_INFORMATION pfbInfoBase = ExAllocatePoolWithTag(PagedPool, uSize, SFPD_ALLOCATION_TAG);
+	pfbInfoBase = ExAllocatePoolWithTag(PagedPool, uSize, SFPD_ALLOCATION_TAG);
 	pfbInfo = pfbInfoBase;
 
 	if (pfbInfoBase == NULL)
@@ -345,6 +346,7 @@ NTSTATUS GetSFPDFilesInDirectory(WDFDEVICE device, WCHAR* DirectoryPath, DWORD N
 	BOOLEAN bIsStarted = TRUE;
 	UINT uSize = sizeof(FILE_BOTH_DIR_INFORMATION);
 	FILE_BOTH_DIR_INFORMATION* pfbInfo = NULL;
+	PFILE_BOTH_DIR_INFORMATION pfbInfoBase = NULL;
 
 	HANDLE FileHandle = NULL;
 	WCHAR* FilePath = (WCHAR*)ExAllocatePoolWithTag(NonPagedPool, MAX_PATH * sizeof(WCHAR), POOL_TAG_FILEPATH);
@@ -390,7 +392,7 @@ NTSTATUS GetSFPDFilesInDirectory(WDFDEVICE device, WCHAR* DirectoryPath, DWORD N
 	// https://community.osr.com/t/zwquerydirectoryfile-api-question-enumerating-files-in-a-directory-or-in-a-volumes/31914/3
 	//
 
-	PFILE_BOTH_DIR_INFORMATION pfbInfoBase = ExAllocatePoolWithTag(PagedPool, uSize, SFPD_ALLOCATION_TAG);
+	pfbInfoBase = ExAllocatePoolWithTag(PagedPool, uSize, SFPD_ALLOCATION_TAG);
 	pfbInfo = pfbInfoBase;
 
 	if (pfbInfoBase == NULL)
