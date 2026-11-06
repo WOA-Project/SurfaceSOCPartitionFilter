@@ -18,8 +18,10 @@ Environment:
 
 #include "sfpd.h"
 
-// ntifs header is incompatible with wdm header...
+#define SFPD_FILE_BLOCK_SIZE 244
+#define SFPD_ALLOCATION_TAG 'DPFS'
 
+// ntifs header is incompatible with wdm header...
 #if (NTDDI_VERSION >= NTDDI_WIN2K)
 _IRQL_requires_max_(PASSIVE_LEVEL)
 NTSYSAPI
@@ -231,9 +233,10 @@ NTSTATUS GetSFPDNumberOfFilesInDirectory(WDFDEVICE device, WCHAR* DirectoryPath,
 	// https://community.osr.com/t/zwquerydirectoryfile-api-question-enumerating-files-in-a-directory-or-in-a-volumes/31914/3
 	//
 
-	pfbInfo = ExAllocatePoolWithTag(PagedPool, uSize, '0000');
+	PFILE_BOTH_DIR_INFORMATION pfbInfoBase = ExAllocatePoolWithTag(PagedPool, uSize, SFPD_ALLOCATION_TAG);
+	pfbInfo = pfbInfoBase;
 
-	if (pfbInfo == NULL)
+	if (pfbInfoBase == NULL)
 	{
 		status = STATUS_NO_MEMORY;
 		goto exit;
@@ -241,6 +244,7 @@ NTSTATUS GetSFPDNumberOfFilesInDirectory(WDFDEVICE device, WCHAR* DirectoryPath,
 
 	while (TRUE)
 	{
+		pfbInfo = pfbInfoBase;
 	lbl_retry:
 		RtlZeroMemory(pfbInfo, uSize);
 		status = ZwQueryDirectoryFile(FileHandle, 0, NULL, NULL, &IOStatusBlock, pfbInfo,
@@ -248,12 +252,19 @@ NTSTATUS GetSFPDNumberOfFilesInDirectory(WDFDEVICE device, WCHAR* DirectoryPath,
 
 		if (STATUS_BUFFER_OVERFLOW == status)
 		{
-			ExFreePool(pfbInfo);
+			ExFreePool(pfbInfoBase);
 
-			uSize = uSize * 2;
-			pfbInfo = ExAllocatePoolWithTag(PagedPool, uSize, '0000');
+			uSize *= 2;
 
-			if (pfbInfo == NULL)
+			pfbInfoBase =
+				ExAllocatePoolWithTag(
+					PagedPool,
+					uSize,
+					SFPD_ALLOCATION_TAG);
+
+			pfbInfo = pfbInfoBase;
+
+			if (pfbInfoBase == NULL)
 			{
 				status = STATUS_NO_MEMORY;
 				goto exit;
@@ -289,14 +300,28 @@ NTSTATUS GetSFPDNumberOfFilesInDirectory(WDFDEVICE device, WCHAR* DirectoryPath,
 				break;
 			}
 
-			pfbInfo += pfbInfo->NextEntryOffset;
+			PUCHAR End =
+				(PUCHAR)pfbInfoBase +
+				IOStatusBlock.Information;
+
+			if ((PUCHAR)pfbInfo +
+					pfbInfo->NextEntryOffset > End)
+			{
+				status = STATUS_DATA_ERROR;
+				goto exit;
+			}
+
+			pfbInfo =
+				(PFILE_BOTH_DIR_INFORMATION)
+				((PUCHAR)pfbInfo +
+				pfbInfo->NextEntryOffset);
 		}
 	}
 
 exit:
-	if (pfbInfo != NULL)
+	if (pfbInfoBase != NULL)
 	{
-		ExFreePool(pfbInfo);
+		ExFreePool(pfbInfoBase);
 	}
 
 	if (FilePath != NULL)
@@ -365,9 +390,10 @@ NTSTATUS GetSFPDFilesInDirectory(WDFDEVICE device, WCHAR* DirectoryPath, DWORD N
 	// https://community.osr.com/t/zwquerydirectoryfile-api-question-enumerating-files-in-a-directory-or-in-a-volumes/31914/3
 	//
 
-	pfbInfo = ExAllocatePoolWithTag(PagedPool, uSize, '0000');
+	PFILE_BOTH_DIR_INFORMATION pfbInfoBase = ExAllocatePoolWithTag(PagedPool, uSize, SFPD_ALLOCATION_TAG);
+	pfbInfo = pfbInfoBase;
 
-	if (pfbInfo == NULL)
+	if (pfbInfoBase == NULL)
 	{
 		status = STATUS_NO_MEMORY;
 		goto exit;
@@ -378,6 +404,7 @@ NTSTATUS GetSFPDFilesInDirectory(WDFDEVICE device, WCHAR* DirectoryPath, DWORD N
 
 	while (TRUE)
 	{
+		pfbInfo = pfbInfoBase;
 	lbl_retry:
 		RtlZeroMemory(pfbInfo, uSize);
 		status = ZwQueryDirectoryFile(FileHandle, 0, NULL, NULL, &IOStatusBlock, pfbInfo,
@@ -385,12 +412,19 @@ NTSTATUS GetSFPDFilesInDirectory(WDFDEVICE device, WCHAR* DirectoryPath, DWORD N
 
 		if (STATUS_BUFFER_OVERFLOW == status)
 		{
-			ExFreePool(pfbInfo);
+			ExFreePool(pfbInfoBase);
 
-			uSize = uSize * 2;
-			pfbInfo = ExAllocatePoolWithTag(PagedPool, uSize, '0000');
+			uSize *= 2;
 
-			if (pfbInfo == NULL)
+			pfbInfoBase =
+				ExAllocatePoolWithTag(
+					PagedPool,
+					uSize,
+					SFPD_ALLOCATION_TAG);
+
+			pfbInfo = pfbInfoBase;
+
+			if (pfbInfoBase == NULL)
 			{
 				status = STATUS_NO_MEMORY;
 				goto exit;
@@ -425,7 +459,7 @@ NTSTATUS GetSFPDFilesInDirectory(WDFDEVICE device, WCHAR* DirectoryPath, DWORD N
 					goto exit;
 				}
 
-				PUCHAR FileBlockBuffer = Buffer + (CurrentNumberOfFiles - 1) * 244;
+				PUCHAR FileBlockBuffer = Buffer + (CurrentNumberOfFiles - 1) * SFPD_FILE_BLOCK_SIZE;
 
 				RtlCopyMemory(FileBlockBuffer, pfbInfo->FileName, min(pfbInfo->FileNameLength, 49 * sizeof(WCHAR)));
 				RtlCopyMemory(FileBlockBuffer + (49 * sizeof(WCHAR)), L"JSON", sizeof(L"JSON"));
@@ -451,14 +485,28 @@ NTSTATUS GetSFPDFilesInDirectory(WDFDEVICE device, WCHAR* DirectoryPath, DWORD N
 				break;
 			}
 
-			pfbInfo += pfbInfo->NextEntryOffset;
+			PUCHAR End =
+				(PUCHAR)pfbInfoBase +
+				IOStatusBlock.Information;
+
+			if ((PUCHAR)pfbInfo +
+					pfbInfo->NextEntryOffset > End)
+			{
+				status = STATUS_DATA_ERROR;
+				goto exit;
+			}
+
+			pfbInfo =
+				(PFILE_BOTH_DIR_INFORMATION)
+				((PUCHAR)pfbInfo +
+				pfbInfo->NextEntryOffset);
 		}
 	}
 
 exit:
-	if (pfbInfo != NULL)
+	if (pfbInfoBase != NULL)
 	{
-		ExFreePool(pfbInfo);
+		ExFreePool(pfbInfoBase);
 	}
 
 	if (FilePath != NULL)

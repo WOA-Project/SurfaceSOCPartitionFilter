@@ -107,26 +107,19 @@ EXTERN_C_START
 #define WIDEVINE_DATA_DIRECTORY                   L"\\widevine" // Epsilon
 #define WLAN_MAC_FILE_PATH                        L"\\wlan\\wlan_mac.bin"
 
-typedef enum _SFPD_DISPLAY_PIXEL_ALIGNMENT_DATA_PANEL_SIDE
-{
-	UNKNOWN_SIDE,
-	LEFT_SIDE = 1,
-	RIGHT_SIDE = 2,
-	MAX_DISPLAY_SIDES = RIGHT_SIDE
-} SFPD_DISPLAY_PIXEL_ALIGNMENT_DATA_PANEL_SIDE;
-
 #pragma pack(push)
 #pragma pack(1)
 typedef struct _SFPD_DISPLAY_PIXEL_ALIGNMENT_DATA
 {
-	BYTE Reserved0[4]; // 0
-	BYTE Reserved1[4]; // 31 37 17 C2
-	SFPD_DISPLAY_PIXEL_ALIGNMENT_DATA_PANEL_SIDE Panel0Side;
-	SFPD_DISPLAY_PIXEL_ALIGNMENT_DATA_PANEL_SIDE Panel1Side;
-	BYTE Panel0Shift[4];
-	BYTE Panel1Shift[4];
+    UINT32 Version;
+    FLOAT PreCalibrationPanelMisalignmentInMicrometer;
+    UINT32 PixelShiftForLeftPanel;
+    UINT32 PixelShiftForRightPanel;
+    FLOAT PanelAlignmentOffsetsMm[2];
 } SFPD_DISPLAY_PIXEL_ALIGNMENT_DATA, * PSFPD_DISPLAY_PIXEL_ALIGNMENT_DATA;
 #pragma pack(pop)
+
+C_ASSERT(sizeof(SFPD_DISPLAY_PIXEL_ALIGNMENT_DATA) == 24);
 
 NTSTATUS GetSFPDPixelAlignmentData(WDFDEVICE device, PSFPD_DISPLAY_PIXEL_ALIGNMENT_DATA PixelAlignmentData);
 NTSTATUS GetSFPDVolumePath(WDFDEVICE device, WCHAR* VolumePath, DWORD VolumePathLength);
