@@ -48,8 +48,5 @@
     <ClCompile Include="..\src\sfpd.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\src\qcomdefs.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
   </ItemGroup>
 </Project>

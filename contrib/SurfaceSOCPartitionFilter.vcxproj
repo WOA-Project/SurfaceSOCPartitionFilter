@@ -141,7 +141,6 @@
     <ClCompile Include="..\src\lookup.c" />
     <ClCompile Include="..\src\path.c" />
     <ClCompile Include="..\src\provision.c" />
-    <ClCompile Include="..\src\qcomdefs.c" />
     <ClCompile Include="..\src\request.c" />
     <ClCompile Include="..\src\response.c" />
     <ClCompile Include="..\src\sensor.c" />
