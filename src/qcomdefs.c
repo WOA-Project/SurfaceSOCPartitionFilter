@@ -4,17 +4,16 @@ Copyright (c) 2021-2024 DuoWoA authors. All Rights Reserved.
 
 Module Name:
 
-	qcomdefs.c
+    qcomdefs.c
 
 Abstract:
 
-	This file contains the QCOM definition functions.
+    This file contains the QCOM definition functions.
 
 Environment:
 
-	Kernel-mode Driver Framework
+    Kernel-mode Driver Framework
 
 --*/
 
 #include "qcomdefs.h"
-

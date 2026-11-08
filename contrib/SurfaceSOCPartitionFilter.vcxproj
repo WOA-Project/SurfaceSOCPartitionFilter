@@ -79,7 +79,10 @@
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);.;$(DDK_INC_PATH);$(DDK_INC_PATH)\wdm\</AdditionalIncludeDirectories>
       <ExceptionHandling>
       </ExceptionHandling>
-      <DisableSpecificWarnings>4146;4214;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <DisableSpecificWarnings>4146;4201;4214;4996;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <SDLCheck>true</SDLCheck>
+      <SpectreMitigation>Spectre</SpectreMitigation>
       <WppEnabled>true</WppEnabled>
       <WppRecorderEnabled>true</WppRecorderEnabled>
       <WppScanConfigurationData>$(SolutionDir)..\include\trace.h</WppScanConfigurationData>
@@ -104,7 +107,10 @@
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);.;$(DDK_INC_PATH);$(DDK_INC_PATH)\wdm\</AdditionalIncludeDirectories>
       <ExceptionHandling>
       </ExceptionHandling>
-      <DisableSpecificWarnings>4146;4214;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <DisableSpecificWarnings>4146;4201;4214;4996;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <SDLCheck>true</SDLCheck>
+      <SpectreMitigation>Spectre</SpectreMitigation>
       <WppEnabled>true</WppEnabled>
       <WppRecorderEnabled>true</WppRecorderEnabled>
       <WppScanConfigurationData>$(SolutionDir)..\include\trace.h</WppScanConfigurationData>
@@ -127,20 +133,42 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\src\constants.c" />
+    <ClCompile Include="..\src\directory.c" />
+    <ClCompile Include="..\src\dispatch.c" />
+    <ClCompile Include="..\src\fileproperty.c" />
+    <ClCompile Include="..\src\filetable.c" />
     <ClCompile Include="..\src\filter.c" />
-    <ClCompile Include="..\src\sfpd.c" />
+    <ClCompile Include="..\src\lookup.c" />
+    <ClCompile Include="..\src\path.c" />
+    <ClCompile Include="..\src\provision.c" />
     <ClCompile Include="..\src\qcomdefs.c" />
+    <ClCompile Include="..\src\request.c" />
+    <ClCompile Include="..\src\response.c" />
+    <ClCompile Include="..\src\sensor.c" />
+    <ClCompile Include="..\src\sfpd.c" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="..\src\Resource.rc" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\include\constants.h" />
+    <ClInclude Include="..\include\directory.h" />
+    <ClInclude Include="..\include\dispatch.h" />
+    <ClInclude Include="..\include\fileproperty.h" />
+    <ClInclude Include="..\include\filetable.h" />
     <ClInclude Include="..\include\filter.h" />
-    <ClInclude Include="..\include\resource.h" />
-    <ClInclude Include="..\include\trace.h" />
-    <ClInclude Include="..\include\sfpd.h" />
+    <ClInclude Include="..\include\filter_context.h" />
+    <ClInclude Include="..\include\lookup.h" />
+    <ClInclude Include="..\include\path.h" />
+    <ClInclude Include="..\include\provision.h" />
     <ClInclude Include="..\include\qcomdefs.h" />
+    <ClInclude Include="..\include\qcfs.h" />
+    <ClInclude Include="..\include\request.h" />
+    <ClInclude Include="..\include\resource.h" />
+    <ClInclude Include="..\include\response.h" />
+    <ClInclude Include="..\include\sensor.h" />
+    <ClInclude Include="..\include\sfpd.h" />
+    <ClInclude Include="..\include\trace.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

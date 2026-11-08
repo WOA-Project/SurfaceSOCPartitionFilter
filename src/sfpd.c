@@ -4,19 +4,20 @@ Copyright (c) 2021-2024 DuoWoA authors. All Rights Reserved.
 
 Module Name:
 
-	sfpd.c
+    sfpd.c
 
 Abstract:
 
-	This file contains the SFPD functions.
+    This file contains the SFPD functions.
 
 Environment:
 
-	Kernel-mode Driver Framework
+    Kernel-mode Driver Framework
 
 --*/
 
 #include "sfpd.h"
+#include "qcfs.h"
 
 #define SFPD_FILE_BLOCK_SIZE 244
 #define SFPD_ALLOCATION_TAG 'DPFS'
@@ -28,785 +29,836 @@ NTSYSAPI
 NTSTATUS
 NTAPI
 ZwQueryDirectoryFile(
-	_In_ HANDLE FileHandle,
-	_In_opt_ HANDLE Event,
-	_In_opt_ PIO_APC_ROUTINE ApcRoutine,
-	_In_opt_ PVOID ApcContext,
-	_Out_ PIO_STATUS_BLOCK IoStatusBlock,
-	_Out_writes_bytes_(Length) PVOID FileInformation,
-	_In_ ULONG Length,
-	_In_ FILE_INFORMATION_CLASS FileInformationClass,
-	_In_ BOOLEAN ReturnSingleEntry,
-	_In_opt_ PUNICODE_STRING FileName,
-	_In_ BOOLEAN RestartScan
-);
+    _In_ HANDLE FileHandle,
+    _In_opt_ HANDLE Event,
+    _In_opt_ PIO_APC_ROUTINE ApcRoutine,
+    _In_opt_ PVOID ApcContext,
+    _Out_ PIO_STATUS_BLOCK IoStatusBlock,
+    _Out_writes_bytes_(Length) PVOID FileInformation,
+    _In_ ULONG Length,
+    _In_ FILE_INFORMATION_CLASS FileInformationClass,
+    _In_ BOOLEAN ReturnSingleEntry,
+    _In_opt_ PUNICODE_STRING FileName,
+    _In_ BOOLEAN RestartScan);
 #endif
 
-typedef struct _FILE_BOTH_DIR_INFORMATION {
-	ULONG NextEntryOffset;
-	ULONG FileIndex;
-	LARGE_INTEGER CreationTime;
-	LARGE_INTEGER LastAccessTime;
-	LARGE_INTEGER LastWriteTime;
-	LARGE_INTEGER ChangeTime;
-	LARGE_INTEGER EndOfFile;
-	LARGE_INTEGER AllocationSize;
-	ULONG FileAttributes;
-	ULONG FileNameLength;
-	ULONG EaSize;
-	CCHAR ShortNameLength;
-	WCHAR ShortName[12];
-	_Field_size_bytes_(FileNameLength) WCHAR FileName[1];
-} FILE_BOTH_DIR_INFORMATION, * PFILE_BOTH_DIR_INFORMATION;
+typedef struct _FILE_BOTH_DIR_INFORMATION
+{
+    ULONG NextEntryOffset;
+    ULONG FileIndex;
+    LARGE_INTEGER CreationTime;
+    LARGE_INTEGER LastAccessTime;
+    LARGE_INTEGER LastWriteTime;
+    LARGE_INTEGER ChangeTime;
+    LARGE_INTEGER EndOfFile;
+    LARGE_INTEGER AllocationSize;
+    ULONG FileAttributes;
+    ULONG FileNameLength;
+    ULONG EaSize;
+    CCHAR ShortNameLength;
+    WCHAR ShortName[12];
+    _Field_size_bytes_(FileNameLength) WCHAR FileName[1];
+} FILE_BOTH_DIR_INFORMATION, *PFILE_BOTH_DIR_INFORMATION;
 
 // end of workaround for ntifs
 
-NTSTATUS GetSFPDPixelAlignmentData(WDFDEVICE device, PSFPD_DISPLAY_PIXEL_ALIGNMENT_DATA PixelAlignmentData)
+NTSTATUS
+GetSFPDPixelAlignmentData(WDFDEVICE device, PSFPD_DISPLAY_PIXEL_ALIGNMENT_DATA PixelAlignmentData)
 {
-	NTSTATUS status = STATUS_UNSUCCESSFUL;
+    NTSTATUS status = STATUS_UNSUCCESSFUL;
 
-	if (PixelAlignmentData == NULL)
-	{
-		status = STATUS_INVALID_PARAMETER;
-		goto exit;
-	}
+    if (PixelAlignmentData == NULL)
+    {
+        status = STATUS_INVALID_PARAMETER;
+        goto exit;
+    }
 
-	DWORD PixelAlignmentDataSize = sizeof(SFPD_DISPLAY_PIXEL_ALIGNMENT_DATA);
-	DWORD ActualSFPDFileSize = 0;
+    DWORD PixelAlignmentDataSize = sizeof(SFPD_DISPLAY_PIXEL_ALIGNMENT_DATA);
+    DWORD ActualSFPDFileSize = 0;
 
-	status = GetSFPDItemSize(device, PIXEL_ALIGNMENT_DATA_FILE_PATH, &ActualSFPDFileSize);
+    status = GetSFPDItemSize(device, PIXEL_ALIGNMENT_DATA_FILE_PATH, &ActualSFPDFileSize);
 
-	if (!NT_SUCCESS(status))
-	{
-		goto exit;
-	}
+    if (!NT_SUCCESS(status))
+    {
+        goto exit;
+    }
 
-	if (PixelAlignmentDataSize != ActualSFPDFileSize)
-	{
-		status = STATUS_FILE_CORRUPT_ERROR;
-		goto exit;
-	}
+    if (PixelAlignmentDataSize != ActualSFPDFileSize)
+    {
+        status = STATUS_FILE_CORRUPT_ERROR;
+        goto exit;
+    }
 
-	status = GetSFPDItem(device, PIXEL_ALIGNMENT_DATA_FILE_PATH, PixelAlignmentData, PixelAlignmentDataSize);
+    status = GetSFPDItem(device, PIXEL_ALIGNMENT_DATA_FILE_PATH, PixelAlignmentData, PixelAlignmentDataSize);
 
-	if (!NT_SUCCESS(status))
-	{
-		goto exit;
-	}
+    if (!NT_SUCCESS(status))
+    {
+        goto exit;
+    }
 
 exit:
-	return status;
+    return status;
 }
 
-NTSTATUS GetSFPDItem(WDFDEVICE device, WCHAR* ItemPath, PVOID Data, DWORD DataSize)
+NTSTATUS
+GetSFPDItem(WDFDEVICE device, WCHAR *ItemPath, PVOID Data, DWORD DataSize)
 {
-	NTSTATUS status = STATUS_UNSUCCESSFUL;
-	WCHAR* FilePath = NULL;
-	HANDLE FileHandle = NULL;
+    NTSTATUS status = STATUS_UNSUCCESSFUL;
+    WCHAR *FilePath = NULL;
+    HANDLE FileHandle = NULL;
 
-	if (Data == NULL || DataSize == 0 || ItemPath == NULL)
-	{
-		status = STATUS_INVALID_PARAMETER;
-		goto exit;
-	}
+    if (Data == NULL || DataSize == 0 || ItemPath == NULL)
+    {
+        status = STATUS_INVALID_PARAMETER;
+        goto exit;
+    }
 
-	FilePath = (WCHAR*)ExAllocatePoolWithTag(NonPagedPool, MAX_PATH * sizeof(WCHAR), POOL_TAG_FILEPATH);
+    FilePath = (WCHAR *)ExAllocatePoolWithTag(NonPagedPool, MAX_PATH * sizeof(WCHAR), POOL_TAG_FILEPATH);
 
-	if (FilePath == NULL)
-	{
-		status = STATUS_INSUFFICIENT_RESOURCES;
-		goto exit;
-	}
+    if (FilePath == NULL)
+    {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto exit;
+    }
 
-	status = GetSFPDVolumePath(device, FilePath, MAX_PATH);
+    status = GetSFPDVolumePath(device, FilePath, MAX_PATH);
 
-	if (!NT_SUCCESS(status))
-	{
-		status = STATUS_NOT_FOUND;
-		goto exit;
-	}
+    if (!NT_SUCCESS(status))
+    {
+        status = STATUS_NOT_FOUND;
+        goto exit;
+    }
 
-	status = RtlStringCbCatW(FilePath, MAX_PATH * sizeof(WCHAR), ItemPath);
+    status = RtlStringCbCatW(FilePath, MAX_PATH * sizeof(WCHAR), ItemPath);
 
-	if (!NT_SUCCESS(status))
-	{
-		status = STATUS_INSUFFICIENT_RESOURCES;
-		goto exit;
-	}
+    if (!NT_SUCCESS(status))
+    {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto exit;
+    }
 
-	UNICODE_STRING FilePathUnicode;
-	RtlInitUnicodeString(&FilePathUnicode, FilePath);
+    UNICODE_STRING FilePathUnicode;
+    RtlInitUnicodeString(&FilePathUnicode, FilePath);
 
-	OBJECT_ATTRIBUTES Attributes = { 0 };
-	InitializeObjectAttributes(&Attributes, &FilePathUnicode, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
+    OBJECT_ATTRIBUTES Attributes = {0};
+    InitializeObjectAttributes(&Attributes, &FilePathUnicode, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
 
-	IO_STATUS_BLOCK IOStatusBlock = { 0 };
+    IO_STATUS_BLOCK IOStatusBlock = {0};
 
-	status = ZwCreateFile(&FileHandle, GENERIC_READ, &Attributes, &IOStatusBlock, NULL, FILE_ATTRIBUTE_NORMAL, 0, FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0);
+    status = ZwCreateFile(
+        &FileHandle,
+        GENERIC_READ,
+        &Attributes,
+        &IOStatusBlock,
+        NULL,
+        FILE_ATTRIBUTE_NORMAL,
+        0,
+        FILE_OPEN,
+        FILE_SYNCHRONOUS_IO_NONALERT,
+        NULL,
+        0);
 
-	if (!NT_SUCCESS(status))
-	{
-		status = STATUS_FILE_INVALID;
-		goto exit;
-	}
+    if (!NT_SUCCESS(status))
+    {
+        status = STATUS_FILE_INVALID;
+        goto exit;
+    }
 
-	status = ZwReadFile(FileHandle, NULL, NULL, NULL, &IOStatusBlock, Data, DataSize, NULL, NULL);
+    status = ZwReadFile(FileHandle, NULL, NULL, NULL, &IOStatusBlock, Data, DataSize, NULL, NULL);
 
-	if (!NT_SUCCESS(status))
-	{
-		status = STATUS_FILE_INVALID;
-		goto exit;
-	}
+    if (!NT_SUCCESS(status))
+    {
+        status = STATUS_FILE_INVALID;
+        goto exit;
+    }
 
 exit:
 
-	if (NULL != FilePath)
-	{
-		ExFreePool(FilePath);
-	}
+    if (NULL != FilePath)
+    {
+        ExFreePool(FilePath);
+    }
 
-	if (NULL != FileHandle)
-	{
-		ZwClose(FileHandle);
-	}
+    if (NULL != FileHandle)
+    {
+        ZwClose(FileHandle);
+    }
 
-	return status;
+    return status;
 }
 
-NTSTATUS GetSFPDNumberOfFilesInDirectory(WDFDEVICE device, WCHAR* DirectoryPath, DWORD* NumberOfFiles)
+NTSTATUS
+GetSFPDNumberOfFilesInDirectory(WDFDEVICE device, WCHAR *DirectoryPath, DWORD *NumberOfFiles)
 {
-	NTSTATUS status = STATUS_UNSUCCESSFUL;
+    NTSTATUS status = STATUS_UNSUCCESSFUL;
 
-	BOOLEAN bIsStarted = TRUE;
-	UINT uSize = sizeof(FILE_BOTH_DIR_INFORMATION);
-	FILE_BOTH_DIR_INFORMATION* pfbInfo = NULL;
-	PFILE_BOTH_DIR_INFORMATION pfbInfoBase = NULL;
+    BOOLEAN bIsStarted = TRUE;
+    UINT uSize = sizeof(FILE_BOTH_DIR_INFORMATION);
+    FILE_BOTH_DIR_INFORMATION *pfbInfo = NULL;
+    PFILE_BOTH_DIR_INFORMATION pfbInfoBase = NULL;
 
-	HANDLE FileHandle = NULL;
-	WCHAR* FilePath = (WCHAR*)ExAllocatePoolWithTag(NonPagedPool, MAX_PATH * sizeof(WCHAR), POOL_TAG_FILEPATH);
+    HANDLE FileHandle = NULL;
+    WCHAR *FilePath = (WCHAR *)ExAllocatePoolWithTag(NonPagedPool, MAX_PATH * sizeof(WCHAR), POOL_TAG_FILEPATH);
 
-	if (NULL == FilePath)
-	{
-		status = STATUS_INSUFFICIENT_RESOURCES;
-		goto exit;
-	}
+    if (NULL == FilePath)
+    {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto exit;
+    }
 
-	if (NULL == NumberOfFiles)
-	{
-		status = STATUS_INSUFFICIENT_RESOURCES;
-		goto exit;
-	}
+    if (NULL == NumberOfFiles)
+    {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto exit;
+    }
 
-	*NumberOfFiles = 0;
+    *NumberOfFiles = 0;
 
-	status = GetSFPDVolumePath(device, FilePath, MAX_PATH);
+    status = GetSFPDVolumePath(device, FilePath, MAX_PATH);
 
-	if (!NT_SUCCESS(status))
-	{
-		status = STATUS_NOT_FOUND;
-		goto exit;
-	}
+    if (!NT_SUCCESS(status))
+    {
+        status = STATUS_NOT_FOUND;
+        goto exit;
+    }
 
-	status = RtlStringCbCatW(FilePath, MAX_PATH * sizeof(WCHAR), DirectoryPath);
+    status = RtlStringCbCatW(FilePath, MAX_PATH * sizeof(WCHAR), DirectoryPath);
 
-	if (!NT_SUCCESS(status))
-	{
-		status = STATUS_INSUFFICIENT_RESOURCES;
-		goto exit;
-	}
+    if (!NT_SUCCESS(status))
+    {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto exit;
+    }
 
-	UNICODE_STRING FilePathUnicode;
-	RtlInitUnicodeString(&FilePathUnicode, FilePath);
+    UNICODE_STRING FilePathUnicode;
+    RtlInitUnicodeString(&FilePathUnicode, FilePath);
 
-	OBJECT_ATTRIBUTES Attributes = { 0 };
-	InitializeObjectAttributes(&Attributes, &FilePathUnicode, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
+    OBJECT_ATTRIBUTES Attributes = {0};
+    InitializeObjectAttributes(&Attributes, &FilePathUnicode, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
 
-	IO_STATUS_BLOCK IOStatusBlock = { 0 };
+    IO_STATUS_BLOCK IOStatusBlock = {0};
 
-	status = ZwCreateFile(&FileHandle, GENERIC_READ | SYNCHRONIZE, &Attributes, &IOStatusBlock, NULL, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0);
-	if (!NT_SUCCESS(status))
-	{
-		status = STATUS_FILE_NOT_AVAILABLE;
-		goto exit;
-	}
+    status = ZwCreateFile(
+        &FileHandle,
+        GENERIC_READ | SYNCHRONIZE,
+        &Attributes,
+        &IOStatusBlock,
+        NULL,
+        FILE_ATTRIBUTE_NORMAL,
+        FILE_SHARE_READ,
+        FILE_OPEN,
+        FILE_SYNCHRONOUS_IO_NONALERT,
+        NULL,
+        0);
+    if (!NT_SUCCESS(status))
+    {
+        status = STATUS_FILE_NOT_AVAILABLE;
+        goto exit;
+    }
 
-	//
-	// https://community.osr.com/t/zwquerydirectoryfile-api-question-enumerating-files-in-a-directory-or-in-a-volumes/31914/3
-	//
+    //
+    // https://community.osr.com/t/zwquerydirectoryfile-api-question-enumerating-files-in-a-directory-or-in-a-volumes/31914/3
+    //
 
-	pfbInfoBase = ExAllocatePoolWithTag(PagedPool, uSize, SFPD_ALLOCATION_TAG);
-	pfbInfo = pfbInfoBase;
+    pfbInfoBase = ExAllocatePoolWithTag(PagedPool, uSize, SFPD_ALLOCATION_TAG);
+    pfbInfo = pfbInfoBase;
 
-	if (pfbInfoBase == NULL)
-	{
-		status = STATUS_NO_MEMORY;
-		goto exit;
-	}
+    if (pfbInfoBase == NULL)
+    {
+        status = STATUS_NO_MEMORY;
+        goto exit;
+    }
 
-	while (TRUE)
-	{
-		pfbInfo = pfbInfoBase;
-	lbl_retry:
-		RtlZeroMemory(pfbInfo, uSize);
-		status = ZwQueryDirectoryFile(FileHandle, 0, NULL, NULL, &IOStatusBlock, pfbInfo,
-			uSize, FileBothDirectoryInformation, FALSE, NULL, bIsStarted);
+    while (TRUE)
+    {
+        pfbInfo = pfbInfoBase;
+    lbl_retry:
+        RtlZeroMemory(pfbInfo, uSize);
+        status = ZwQueryDirectoryFile(
+            FileHandle,
+            0,
+            NULL,
+            NULL,
+            &IOStatusBlock,
+            pfbInfo,
+            uSize,
+            FileBothDirectoryInformation,
+            FALSE,
+            NULL,
+            bIsStarted);
 
-		if (STATUS_BUFFER_OVERFLOW == status)
-		{
-			ExFreePool(pfbInfoBase);
+        if (STATUS_BUFFER_OVERFLOW == status)
+        {
+            ExFreePool(pfbInfoBase);
 
-			uSize *= 2;
+            uSize *= 2;
 
-			pfbInfoBase =
-				ExAllocatePoolWithTag(
-					PagedPool,
-					uSize,
-					SFPD_ALLOCATION_TAG);
+            pfbInfoBase = ExAllocatePoolWithTag(PagedPool, uSize, SFPD_ALLOCATION_TAG);
 
-			pfbInfo = pfbInfoBase;
+            pfbInfo = pfbInfoBase;
 
-			if (pfbInfoBase == NULL)
-			{
-				status = STATUS_NO_MEMORY;
-				goto exit;
-			}
+            if (pfbInfoBase == NULL)
+            {
+                status = STATUS_NO_MEMORY;
+                goto exit;
+            }
 
-			goto lbl_retry;
-		}
-		else if (STATUS_NO_MORE_FILES == status)
-		{
-			status = STATUS_SUCCESS;
-			goto exit;
-		}
-		else if (STATUS_SUCCESS != status)
-		{
-			goto exit;
-		}
+            goto lbl_retry;
+        }
+        else if (STATUS_NO_MORE_FILES == status)
+        {
+            status = STATUS_SUCCESS;
+            goto exit;
+        }
+        else if (STATUS_SUCCESS != status)
+        {
+            goto exit;
+        }
 
-		if (bIsStarted)
-		{
-			bIsStarted = FALSE;
-		}
+        if (bIsStarted)
+        {
+            bIsStarted = FALSE;
+        }
 
-		while (TRUE)
-		{
-			// We do not want to touch directories
-			if ((pfbInfo->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != FILE_ATTRIBUTE_DIRECTORY)
-			{
-				*NumberOfFiles = *NumberOfFiles + 1;
-			}
+        while (TRUE)
+        {
+            // We do not want to touch directories
+            if ((pfbInfo->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != FILE_ATTRIBUTE_DIRECTORY)
+            {
+                *NumberOfFiles = *NumberOfFiles + 1;
+            }
 
-			if (pfbInfo->NextEntryOffset == 0)
-			{
-				break;
-			}
+            if (pfbInfo->NextEntryOffset == 0)
+            {
+                break;
+            }
 
-			PUCHAR End =
-				(PUCHAR)pfbInfoBase +
-				IOStatusBlock.Information;
+            PUCHAR End = (PUCHAR)pfbInfoBase + IOStatusBlock.Information;
 
-			if ((PUCHAR)pfbInfo +
-					pfbInfo->NextEntryOffset > End)
-			{
-				status = STATUS_DATA_ERROR;
-				goto exit;
-			}
+            if ((PUCHAR)pfbInfo + pfbInfo->NextEntryOffset > End)
+            {
+                status = STATUS_DATA_ERROR;
+                goto exit;
+            }
 
-			pfbInfo =
-				(PFILE_BOTH_DIR_INFORMATION)
-				((PUCHAR)pfbInfo +
-				pfbInfo->NextEntryOffset);
-		}
-	}
+            pfbInfo = (PFILE_BOTH_DIR_INFORMATION)((PUCHAR)pfbInfo + pfbInfo->NextEntryOffset);
+        }
+    }
 
 exit:
-	if (pfbInfoBase != NULL)
-	{
-		ExFreePool(pfbInfoBase);
-	}
+    if (pfbInfoBase != NULL)
+    {
+        ExFreePool(pfbInfoBase);
+    }
 
-	if (FilePath != NULL)
-	{
-		ExFreePool(FilePath);
-	}
+    if (FilePath != NULL)
+    {
+        ExFreePool(FilePath);
+    }
 
-	if (FileHandle != NULL)
-	{
-		ZwClose(FileHandle);
-	}
+    if (FileHandle != NULL)
+    {
+        ZwClose(FileHandle);
+    }
 
-	return status;
+    return status;
 }
 
 // This function is very specifically crafted for SOCPartition, I know.
-NTSTATUS GetSFPDFilesInDirectory(WDFDEVICE device, WCHAR* DirectoryPath, DWORD NumberOfFiles, PUCHAR Buffer)
+NTSTATUS
+GetSFPDFilesInDirectory(WDFDEVICE device, WCHAR *DirectoryPath, DWORD NumberOfFiles, PUCHAR Buffer)
 {
-	NTSTATUS status = STATUS_UNSUCCESSFUL;
+    NTSTATUS status = STATUS_UNSUCCESSFUL;
 
-	BOOLEAN bIsStarted = TRUE;
-	UINT uSize = sizeof(FILE_BOTH_DIR_INFORMATION);
-	FILE_BOTH_DIR_INFORMATION* pfbInfo = NULL;
-	PFILE_BOTH_DIR_INFORMATION pfbInfoBase = NULL;
+    BOOLEAN bIsStarted = TRUE;
+    UINT uSize = sizeof(FILE_BOTH_DIR_INFORMATION);
+    FILE_BOTH_DIR_INFORMATION *pfbInfo = NULL;
+    PFILE_BOTH_DIR_INFORMATION pfbInfoBase = NULL;
 
-	HANDLE FileHandle = NULL;
-	WCHAR* FilePath = (WCHAR*)ExAllocatePoolWithTag(NonPagedPool, MAX_PATH * sizeof(WCHAR), POOL_TAG_FILEPATH);
+    HANDLE FileHandle = NULL;
+    WCHAR *FilePath = (WCHAR *)ExAllocatePoolWithTag(NonPagedPool, MAX_PATH * sizeof(WCHAR), POOL_TAG_FILEPATH);
 
-	if (NULL == FilePath)
-	{
-		status = STATUS_INSUFFICIENT_RESOURCES;
-		goto exit;
-	}
+    if (NULL == FilePath)
+    {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto exit;
+    }
 
-	status = GetSFPDVolumePath(device, FilePath, MAX_PATH);
+    status = GetSFPDVolumePath(device, FilePath, MAX_PATH);
 
-	if (!NT_SUCCESS(status))
-	{
-		status = STATUS_NOT_FOUND;
-		goto exit;
-	}
+    if (!NT_SUCCESS(status))
+    {
+        status = STATUS_NOT_FOUND;
+        goto exit;
+    }
 
-	status = RtlStringCbCatW(FilePath, MAX_PATH * sizeof(WCHAR), DirectoryPath);
+    status = RtlStringCbCatW(FilePath, MAX_PATH * sizeof(WCHAR), DirectoryPath);
 
-	if (!NT_SUCCESS(status))
-	{
-		status = STATUS_INSUFFICIENT_RESOURCES;
-		goto exit;
-	}
+    if (!NT_SUCCESS(status))
+    {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto exit;
+    }
 
-	UNICODE_STRING FilePathUnicode;
-	RtlInitUnicodeString(&FilePathUnicode, FilePath);
+    UNICODE_STRING FilePathUnicode;
+    RtlInitUnicodeString(&FilePathUnicode, FilePath);
 
-	OBJECT_ATTRIBUTES Attributes = { 0 };
-	InitializeObjectAttributes(&Attributes, &FilePathUnicode, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
+    OBJECT_ATTRIBUTES Attributes = {0};
+    InitializeObjectAttributes(&Attributes, &FilePathUnicode, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
 
-	IO_STATUS_BLOCK IOStatusBlock = { 0 };
+    IO_STATUS_BLOCK IOStatusBlock = {0};
 
-	status = ZwCreateFile(&FileHandle, GENERIC_READ | SYNCHRONIZE, &Attributes, &IOStatusBlock, NULL, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0);
-	if (!NT_SUCCESS(status))
-	{
-		status = STATUS_FILE_NOT_AVAILABLE;
-		goto exit;
-	}
+    status = ZwCreateFile(
+        &FileHandle,
+        GENERIC_READ | SYNCHRONIZE,
+        &Attributes,
+        &IOStatusBlock,
+        NULL,
+        FILE_ATTRIBUTE_NORMAL,
+        FILE_SHARE_READ,
+        FILE_OPEN,
+        FILE_SYNCHRONOUS_IO_NONALERT,
+        NULL,
+        0);
+    if (!NT_SUCCESS(status))
+    {
+        status = STATUS_FILE_NOT_AVAILABLE;
+        goto exit;
+    }
 
-	//
-	// https://community.osr.com/t/zwquerydirectoryfile-api-question-enumerating-files-in-a-directory-or-in-a-volumes/31914/3
-	//
+    //
+    // https://community.osr.com/t/zwquerydirectoryfile-api-question-enumerating-files-in-a-directory-or-in-a-volumes/31914/3
+    //
 
-	pfbInfoBase = ExAllocatePoolWithTag(PagedPool, uSize, SFPD_ALLOCATION_TAG);
-	pfbInfo = pfbInfoBase;
+    pfbInfoBase = ExAllocatePoolWithTag(PagedPool, uSize, SFPD_ALLOCATION_TAG);
+    pfbInfo = pfbInfoBase;
 
-	if (pfbInfoBase == NULL)
-	{
-		status = STATUS_NO_MEMORY;
-		goto exit;
-	}
+    if (pfbInfoBase == NULL)
+    {
+        status = STATUS_NO_MEMORY;
+        goto exit;
+    }
 
-	DWORD CurrentNumberOfFiles = 0;
-	DWORD CurrentFileAllocation = 0;
+    DWORD CurrentNumberOfFiles = 0;
+    DWORD CurrentFileAllocation = 0;
 
-	while (TRUE)
-	{
-		pfbInfo = pfbInfoBase;
-	lbl_retry:
-		RtlZeroMemory(pfbInfo, uSize);
-		status = ZwQueryDirectoryFile(FileHandle, 0, NULL, NULL, &IOStatusBlock, pfbInfo,
-			uSize, FileBothDirectoryInformation, FALSE, NULL, bIsStarted);
+    while (TRUE)
+    {
+        pfbInfo = pfbInfoBase;
+    lbl_retry:
+        RtlZeroMemory(pfbInfo, uSize);
+        status = ZwQueryDirectoryFile(
+            FileHandle,
+            0,
+            NULL,
+            NULL,
+            &IOStatusBlock,
+            pfbInfo,
+            uSize,
+            FileBothDirectoryInformation,
+            FALSE,
+            NULL,
+            bIsStarted);
 
-		if (STATUS_BUFFER_OVERFLOW == status)
-		{
-			ExFreePool(pfbInfoBase);
+        if (STATUS_BUFFER_OVERFLOW == status)
+        {
+            ExFreePool(pfbInfoBase);
 
-			uSize *= 2;
+            uSize *= 2;
 
-			pfbInfoBase =
-				ExAllocatePoolWithTag(
-					PagedPool,
-					uSize,
-					SFPD_ALLOCATION_TAG);
+            pfbInfoBase = ExAllocatePoolWithTag(PagedPool, uSize, SFPD_ALLOCATION_TAG);
 
-			pfbInfo = pfbInfoBase;
+            pfbInfo = pfbInfoBase;
 
-			if (pfbInfoBase == NULL)
-			{
-				status = STATUS_NO_MEMORY;
-				goto exit;
-			}
+            if (pfbInfoBase == NULL)
+            {
+                status = STATUS_NO_MEMORY;
+                goto exit;
+            }
 
-			goto lbl_retry;
-		}
-		else if (STATUS_NO_MORE_FILES == status)
-		{
-			status = STATUS_SUCCESS;
-			goto exit;
-		}
-		else if (STATUS_SUCCESS != status)
-		{
-			goto exit;
-		}
+            goto lbl_retry;
+        }
+        else if (STATUS_NO_MORE_FILES == status)
+        {
+            status = STATUS_SUCCESS;
+            goto exit;
+        }
+        else if (STATUS_SUCCESS != status)
+        {
+            goto exit;
+        }
 
-		if (bIsStarted)
-		{
-			bIsStarted = FALSE;
-		}
+        if (bIsStarted)
+        {
+            bIsStarted = FALSE;
+        }
 
-		while (TRUE)
-		{
-			// We do not want to touch directories
-			if ((pfbInfo->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != FILE_ATTRIBUTE_DIRECTORY)
-			{
-				CurrentNumberOfFiles++;
-				if (CurrentNumberOfFiles > NumberOfFiles)
-				{
-					status = STATUS_NO_MEMORY;
-					goto exit;
-				}
+        while (TRUE)
+        {
+            // We do not want to touch directories
+            if ((pfbInfo->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != FILE_ATTRIBUTE_DIRECTORY)
+            {
+                CurrentNumberOfFiles++;
+                if (CurrentNumberOfFiles > NumberOfFiles)
+                {
+                    status = STATUS_NO_MEMORY;
+                    goto exit;
+                }
 
-				PUCHAR FileBlockBuffer = Buffer + (CurrentNumberOfFiles - 1) * SFPD_FILE_BLOCK_SIZE;
+                PQCFS_DIRECTORY_ENTRY Entry =
+                    (PQCFS_DIRECTORY_ENTRY)(Buffer + ((CurrentNumberOfFiles - 1) * sizeof(QCFS_DIRECTORY_ENTRY)));
+                RtlZeroMemory(Entry, sizeof(*Entry));
 
-				RtlCopyMemory(FileBlockBuffer, pfbInfo->FileName, min(pfbInfo->FileNameLength, 49 * sizeof(WCHAR)));
-				RtlCopyMemory(FileBlockBuffer + (49 * sizeof(WCHAR)), L"JSON", sizeof(L"JSON"));
+                RtlCopyMemory(
+                    Entry->FileName, pfbInfo->FileName, min(pfbInfo->FileNameLength, sizeof(Entry->FileName)));
+                RtlStringCbCopyW(Entry->DirectoryName, sizeof(Entry->DirectoryName), L"JSON");
 
-				DWORD FileSize = pfbInfo->EndOfFile.LowPart;
-				DWORD FileAllocation = FileSize;
+                DWORD FileSize = pfbInfo->EndOfFile.LowPart;
+                DWORD FileAllocation = FileSize;
 
-				if ((FileSize % 256) != 0)
-				{
-					FileAllocation = FileSize + (256 - (FileSize % 256));
-				}
+                if ((FileSize % 256) != 0)
+                {
+                    FileAllocation = FileSize + (256 - (FileSize % 256));
+                }
 
-				*(DWORD*)(FileBlockBuffer + (49 * sizeof(WCHAR)) + (49 * sizeof(WCHAR))) = FileAllocation; // File Allocation
-				*(DWORD*)(FileBlockBuffer + (49 * sizeof(WCHAR)) + (49 * sizeof(WCHAR)) + 4) = FileSize; // FileSize
-				*(DWORD*)(FileBlockBuffer + (49 * sizeof(WCHAR)) + (49 * sizeof(WCHAR)) + 4 + 4) = 1; // ?, always one
-				*(DWORD*)(FileBlockBuffer + (49 * sizeof(WCHAR)) + (49 * sizeof(WCHAR)) + 4 + 4 + 4) = CurrentFileAllocation; // Offset
+                Entry->FileAllocationSize = FileAllocation;
+                Entry->FileSize = FileSize;
+                Entry->Flags = 1;
+                Entry->FileOffset = CurrentFileAllocation;
 
-				CurrentFileAllocation += FileAllocation;
-			}
+                CurrentFileAllocation += FileAllocation;
+            }
 
-			if (pfbInfo->NextEntryOffset == 0)
-			{
-				break;
-			}
+            if (pfbInfo->NextEntryOffset == 0)
+            {
+                break;
+            }
 
-			PUCHAR End =
-				(PUCHAR)pfbInfoBase +
-				IOStatusBlock.Information;
+            PUCHAR End = (PUCHAR)pfbInfoBase + IOStatusBlock.Information;
 
-			if ((PUCHAR)pfbInfo +
-					pfbInfo->NextEntryOffset > End)
-			{
-				status = STATUS_DATA_ERROR;
-				goto exit;
-			}
+            if ((PUCHAR)pfbInfo + pfbInfo->NextEntryOffset > End)
+            {
+                status = STATUS_DATA_ERROR;
+                goto exit;
+            }
 
-			pfbInfo =
-				(PFILE_BOTH_DIR_INFORMATION)
-				((PUCHAR)pfbInfo +
-				pfbInfo->NextEntryOffset);
-		}
-	}
+            pfbInfo = (PFILE_BOTH_DIR_INFORMATION)((PUCHAR)pfbInfo + pfbInfo->NextEntryOffset);
+        }
+    }
 
 exit:
-	if (pfbInfoBase != NULL)
-	{
-		ExFreePool(pfbInfoBase);
-	}
+    if (pfbInfoBase != NULL)
+    {
+        ExFreePool(pfbInfoBase);
+    }
 
-	if (FilePath != NULL)
-	{
-		ExFreePool(FilePath);
-	}
+    if (FilePath != NULL)
+    {
+        ExFreePool(FilePath);
+    }
 
-	if (FileHandle != NULL)
-	{
-		ZwClose(FileHandle);
-	}
+    if (FileHandle != NULL)
+    {
+        ZwClose(FileHandle);
+    }
 
-	return status;
+    return status;
 }
 
-NTSTATUS GetSFPDItemSize(WDFDEVICE device, WCHAR* ItemPath, DWORD* ItemSize)
+NTSTATUS
+GetSFPDItemSize(WDFDEVICE device, WCHAR *ItemPath, DWORD *ItemSize)
 {
-	NTSTATUS status = STATUS_UNSUCCESSFUL;
+    NTSTATUS status = STATUS_UNSUCCESSFUL;
 
-	HANDLE FileHandle = NULL;
-	WCHAR* FilePath = (WCHAR*)ExAllocatePoolWithTag(NonPagedPool, MAX_PATH * sizeof(WCHAR), POOL_TAG_FILEPATH);
+    HANDLE FileHandle = NULL;
+    WCHAR *FilePath = (WCHAR *)ExAllocatePoolWithTag(NonPagedPool, MAX_PATH * sizeof(WCHAR), POOL_TAG_FILEPATH);
 
-	if (NULL == FilePath)
-	{
-		status = STATUS_INSUFFICIENT_RESOURCES;
-		goto exit;
-	}
+    if (NULL == FilePath)
+    {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto exit;
+    }
 
-	status = GetSFPDVolumePath(device, FilePath, MAX_PATH);
+    status = GetSFPDVolumePath(device, FilePath, MAX_PATH);
 
-	if (!NT_SUCCESS(status))
-	{
-		status = STATUS_NOT_FOUND;
-		goto exit;
-	}
+    if (!NT_SUCCESS(status))
+    {
+        status = STATUS_NOT_FOUND;
+        goto exit;
+    }
 
-	status = RtlStringCbCatW(FilePath, MAX_PATH * sizeof(WCHAR), ItemPath);
+    status = RtlStringCbCatW(FilePath, MAX_PATH * sizeof(WCHAR), ItemPath);
 
-	if (!NT_SUCCESS(status))
-	{
-		status = STATUS_INSUFFICIENT_RESOURCES;
-		goto exit;
-	}
+    if (!NT_SUCCESS(status))
+    {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto exit;
+    }
 
-	UNICODE_STRING FilePathUnicode;
-	RtlInitUnicodeString(&FilePathUnicode, FilePath);
+    UNICODE_STRING FilePathUnicode;
+    RtlInitUnicodeString(&FilePathUnicode, FilePath);
 
-	OBJECT_ATTRIBUTES Attributes = { 0 };
-	InitializeObjectAttributes(&Attributes, &FilePathUnicode, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
+    OBJECT_ATTRIBUTES Attributes = {0};
+    InitializeObjectAttributes(&Attributes, &FilePathUnicode, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
 
-	IO_STATUS_BLOCK IOStatusBlock = { 0 };
+    IO_STATUS_BLOCK IOStatusBlock = {0};
 
-	status = ZwCreateFile(&FileHandle, GENERIC_READ, &Attributes, &IOStatusBlock, NULL, FILE_ATTRIBUTE_NORMAL, 0, FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0);
-	if (!NT_SUCCESS(status))
-	{
-		status = STATUS_FILE_NOT_AVAILABLE;
-		goto exit;
-	}
+    status = ZwCreateFile(
+        &FileHandle,
+        GENERIC_READ,
+        &Attributes,
+        &IOStatusBlock,
+        NULL,
+        FILE_ATTRIBUTE_NORMAL,
+        0,
+        FILE_OPEN,
+        FILE_SYNCHRONOUS_IO_NONALERT,
+        NULL,
+        0);
+    if (!NT_SUCCESS(status))
+    {
+        status = STATUS_FILE_NOT_AVAILABLE;
+        goto exit;
+    }
 
-	FILE_STANDARD_INFORMATION FileStandardInfo = { 0 };
+    FILE_STANDARD_INFORMATION FileStandardInfo = {0};
 
-	status = ZwQueryInformationFile(FileHandle, &IOStatusBlock, &FileStandardInfo, sizeof(FILE_STANDARD_INFORMATION), FileStandardInformation);
+    status = ZwQueryInformationFile(
+        FileHandle, &IOStatusBlock, &FileStandardInfo, sizeof(FILE_STANDARD_INFORMATION), FileStandardInformation);
 
-	if (!NT_SUCCESS(status))
-	{
-		status = STATUS_FILE_INVALID;
-		goto exit;
-	}
+    if (!NT_SUCCESS(status))
+    {
+        status = STATUS_FILE_INVALID;
+        goto exit;
+    }
 
-	*ItemSize = FileStandardInfo.EndOfFile.LowPart;
+    *ItemSize = FileStandardInfo.EndOfFile.LowPart;
 
 exit:
-	if (FilePath != NULL)
-	{
-		ExFreePool(FilePath);
-	}
+    if (FilePath != NULL)
+    {
+        ExFreePool(FilePath);
+    }
 
-	if (FileHandle != NULL)
-	{
-		ZwClose(FileHandle);
-	}
+    if (FileHandle != NULL)
+    {
+        ZwClose(FileHandle);
+    }
 
-	return status;
+    return status;
 }
 
-NTSTATUS GetSFPDVolumePath(WDFDEVICE device, WCHAR* VolumePath, DWORD VolumePathLength)
+NTSTATUS
+GetSFPDVolumePath(WDFDEVICE device, WCHAR *VolumePath, DWORD VolumePathLength)
 {
-	NTSTATUS status = STATUS_UNSUCCESSFUL;
+    NTSTATUS status = STATUS_UNSUCCESSFUL;
 
-	WDFIOTARGET                   IOTarget = NULL;
-	WDFREQUEST                    Request = NULL;
-	WDFMEMORY                     IOCTLRequestMemoryBuffer = NULL;
+    WDFIOTARGET IOTarget = NULL;
+    WDFREQUEST Request = NULL;
+    WDFMEMORY IOCTLRequestMemoryBuffer = NULL;
 
-	DRIVE_LAYOUT_INFORMATION_EX* DriverLayoutInformationExtended = NULL;
-	DWORD HardDiskNumber = 0;
-	DWORD PartitionNumber = 0;
-	BOOL FoundPartition = FALSE;
-	WCHAR* DevicePath = NULL;
+    DRIVE_LAYOUT_INFORMATION_EX *DriverLayoutInformationExtended = NULL;
+    DWORD HardDiskNumber = 0;
+    DWORD PartitionNumber = 0;
+    BOOL FoundPartition = FALSE;
+    WCHAR *DevicePath = NULL;
 
-	do
-	{
-		DevicePath = (WCHAR*)ExAllocatePoolWithTag(NonPagedPool, MAX_PATH * sizeof(WCHAR), POOL_TAG_FILEPATH);
+    do
+    {
+        DevicePath = (WCHAR *)ExAllocatePoolWithTag(NonPagedPool, MAX_PATH * sizeof(WCHAR), POOL_TAG_FILEPATH);
 
-		if (DevicePath == NULL)
-		{
-			goto exit;
-		}
+        if (DevicePath == NULL)
+        {
+            goto exit;
+        }
 
-		status = RtlStringCbPrintfW(DevicePath, MAX_PATH * sizeof(WCHAR), L"\\Device\\Harddisk%u\\Partition0", HardDiskNumber);
+        status = RtlStringCbPrintfW(
+            DevicePath, MAX_PATH * sizeof(WCHAR), L"\\Device\\Harddisk%u\\Partition0", HardDiskNumber);
 
-		if (!NT_SUCCESS(status))
-		{
-			goto exit;
-		}
+        if (!NT_SUCCESS(status))
+        {
+            goto exit;
+        }
 
-		UNICODE_STRING DevicePathUnicode = { 0 };
-		RtlInitUnicodeString(&DevicePathUnicode, DevicePath);
+        UNICODE_STRING DevicePathUnicode = {0};
+        RtlInitUnicodeString(&DevicePathUnicode, DevicePath);
 
-		WDF_OBJECT_ATTRIBUTES Attributes;
-		WDF_OBJECT_ATTRIBUTES_INIT(&Attributes);
-		Attributes.ParentObject = device;
+        WDF_OBJECT_ATTRIBUTES Attributes;
+        WDF_OBJECT_ATTRIBUTES_INIT(&Attributes);
+        Attributes.ParentObject = device;
 
-		status = WdfIoTargetCreate(device, &Attributes, &IOTarget);
+        status = WdfIoTargetCreate(device, &Attributes, &IOTarget);
 
-		if (!NT_SUCCESS(status))
-		{
-			goto exit;
-		}
+        if (!NT_SUCCESS(status))
+        {
+            goto exit;
+        }
 
-		WDF_IO_TARGET_OPEN_PARAMS IOTargetOpenParams;
-		WDF_IO_TARGET_OPEN_PARAMS_INIT_OPEN_BY_NAME(
-			&IOTargetOpenParams,
-			&DevicePathUnicode,
-			GENERIC_READ | GENERIC_WRITE
-		);
+        WDF_IO_TARGET_OPEN_PARAMS IOTargetOpenParams;
+        WDF_IO_TARGET_OPEN_PARAMS_INIT_OPEN_BY_NAME(
+            &IOTargetOpenParams, &DevicePathUnicode, GENERIC_READ | GENERIC_WRITE);
 
-		IOTargetOpenParams.ShareAccess = FILE_SHARE_READ | FILE_SHARE_WRITE;
+        IOTargetOpenParams.ShareAccess = FILE_SHARE_READ | FILE_SHARE_WRITE;
 
-		for (DWORD OpenAttemptCounter = 0; OpenAttemptCounter < MAX_FILE_OPEN_ATTEMPTS; OpenAttemptCounter++)
-		{
-			status = WdfIoTargetOpen(IOTarget, &IOTargetOpenParams);
+        for (DWORD OpenAttemptCounter = 0; OpenAttemptCounter < MAX_FILE_OPEN_ATTEMPTS; OpenAttemptCounter++)
+        {
+            status = WdfIoTargetOpen(IOTarget, &IOTargetOpenParams);
 
-			if (status == STATUS_SHARING_VIOLATION)
-			{
-				LARGE_INTEGER timeout = { 0 };
-				timeout.QuadPart = RELATIVE(MILLISECONDS(500));
-				KeDelayExecutionThread(KernelMode, FALSE, &timeout);
-			}
-			else
-			{
-				break;
-			}
-		}
+            if (status == STATUS_SHARING_VIOLATION)
+            {
+                LARGE_INTEGER timeout = {0};
+                timeout.QuadPart = RELATIVE(MILLISECONDS(500));
+                KeDelayExecutionThread(KernelMode, FALSE, &timeout);
+            }
+            else
+            {
+                break;
+            }
+        }
 
-		if (!NT_SUCCESS(status))
-		{
-			WdfObjectDelete(IOTarget);
-			IOTarget = NULL;
+        if (!NT_SUCCESS(status))
+        {
+            WdfObjectDelete(IOTarget);
+            IOTarget = NULL;
 
-			goto exit;
-		}
+            goto exit;
+        }
 
-		DWORD PartitionCount = 4;
+        DWORD PartitionCount = 4;
 
-		do
-		{
-			WDF_OBJECT_ATTRIBUTES_INIT(&Attributes);
-			Attributes.ParentObject = IOTarget;
+        do
+        {
+            WDF_OBJECT_ATTRIBUTES_INIT(&Attributes);
+            Attributes.ParentObject = IOTarget;
 
-			status = WdfRequestCreate(&Attributes, IOTarget, &Request);
-			if (!NT_SUCCESS(status))
-			{
-				goto exit;
-			}
+            status = WdfRequestCreate(&Attributes, IOTarget, &Request);
+            if (!NT_SUCCESS(status))
+            {
+                goto exit;
+            }
 
-			DWORD IOCTLRequestMemoryBufferSize = sizeof(DRIVE_LAYOUT_INFORMATION_EX) + (PartitionCount * sizeof(PARTITION_INFORMATION_EX));
+            DWORD IOCTLRequestMemoryBufferSize =
+                sizeof(DRIVE_LAYOUT_INFORMATION_EX) + (PartitionCount * sizeof(PARTITION_INFORMATION_EX));
 
-			WDF_OBJECT_ATTRIBUTES_INIT(&Attributes);
-			Attributes.ParentObject = Request;
+            WDF_OBJECT_ATTRIBUTES_INIT(&Attributes);
+            Attributes.ParentObject = Request;
 
-			status = WdfMemoryCreate(
-				&Attributes,
-				NonPagedPool,
-				POOL_TAG_DRIVEINFO,
-				IOCTLRequestMemoryBufferSize,
-				&IOCTLRequestMemoryBuffer,
-				&DriverLayoutInformationExtended
-			);
+            status = WdfMemoryCreate(
+                &Attributes,
+                NonPagedPool,
+                POOL_TAG_DRIVEINFO,
+                IOCTLRequestMemoryBufferSize,
+                &IOCTLRequestMemoryBuffer,
+                &DriverLayoutInformationExtended);
 
-			if (!NT_SUCCESS(status))
-			{
-				goto exit;
-			}
+            if (!NT_SUCCESS(status))
+            {
+                goto exit;
+            }
 
-			status = WdfIoTargetFormatRequestForIoctl(
-				IOTarget,
-				Request,
-				IOCTL_DISK_GET_DRIVE_LAYOUT_EX,
-				NULL,
-				NULL,
-				IOCTLRequestMemoryBuffer,
-				NULL
-			);
+            status = WdfIoTargetFormatRequestForIoctl(
+                IOTarget, Request, IOCTL_DISK_GET_DRIVE_LAYOUT_EX, NULL, NULL, IOCTLRequestMemoryBuffer, NULL);
 
-			if (!NT_SUCCESS(status))
-			{
-				goto exit;
-			}
+            if (!NT_SUCCESS(status))
+            {
+                goto exit;
+            }
 
-			WDF_REQUEST_SEND_OPTIONS RequestSendOptions;
-			WDF_REQUEST_SEND_OPTIONS_INIT(
-				&RequestSendOptions,
-				WDF_REQUEST_SEND_OPTION_SYNCHRONOUS
-			);
+            WDF_REQUEST_SEND_OPTIONS RequestSendOptions;
+            WDF_REQUEST_SEND_OPTIONS_INIT(&RequestSendOptions, WDF_REQUEST_SEND_OPTION_SYNCHRONOUS);
 
-			if (WdfRequestSend(Request, IOTarget, &RequestSendOptions) == FALSE)
-			{
-				status = WdfRequestGetStatus(Request);
+            if (WdfRequestSend(Request, IOTarget, &RequestSendOptions) == FALSE)
+            {
+                status = WdfRequestGetStatus(Request);
 
-				goto exit;
-			}
+                goto exit;
+            }
 
-			status = WdfRequestGetStatus(Request);
+            status = WdfRequestGetStatus(Request);
 
-			if (((status == STATUS_BUFFER_TOO_SMALL) || (status == STATUS_INSUFFICIENT_RESOURCES)) && PartitionCount < 256)
-			{
-				PartitionCount *= 2;
+            if (((status == STATUS_BUFFER_TOO_SMALL) || (status == STATUS_INSUFFICIENT_RESOURCES)) &&
+                PartitionCount < 256)
+            {
+                PartitionCount *= 2;
 
-				WdfObjectDelete(IOCTLRequestMemoryBuffer);
-				IOCTLRequestMemoryBuffer = NULL;
+                WdfObjectDelete(IOCTLRequestMemoryBuffer);
+                IOCTLRequestMemoryBuffer = NULL;
 
-				WdfObjectDelete(Request);
-				Request = NULL;
-			}
-			else if (!NT_SUCCESS(status))
-			{
-				goto exit;
-			}
-		} while (!NT_SUCCESS(status));
+                WdfObjectDelete(Request);
+                Request = NULL;
+            }
+            else if (!NT_SUCCESS(status))
+            {
+                goto exit;
+            }
+        } while (!NT_SUCCESS(status));
 
-		if (DriverLayoutInformationExtended->PartitionStyle == PARTITION_STYLE_GPT)
-		{
-			for (DWORD i = 0; i < DriverLayoutInformationExtended->PartitionCount; i++)
-			{
-				if (RtlCompareMemory(&(DriverLayoutInformationExtended->PartitionEntry[i].Gpt.Name), SURFACE_FIRMWARE_PROVISIONING_DATA, sizeof(SURFACE_FIRMWARE_PROVISIONING_DATA)) == sizeof(SURFACE_FIRMWARE_PROVISIONING_DATA))
-				{
-					PartitionNumber = DriverLayoutInformationExtended->PartitionEntry[i].PartitionNumber;
+        if (DriverLayoutInformationExtended->PartitionStyle == PARTITION_STYLE_GPT)
+        {
+            for (DWORD i = 0; i < DriverLayoutInformationExtended->PartitionCount; i++)
+            {
+                if (RtlCompareMemory(
+                        &(DriverLayoutInformationExtended->PartitionEntry[i].Gpt.Name),
+                        SURFACE_FIRMWARE_PROVISIONING_DATA,
+                        sizeof(SURFACE_FIRMWARE_PROVISIONING_DATA)) == sizeof(SURFACE_FIRMWARE_PROVISIONING_DATA))
+                {
+                    PartitionNumber = DriverLayoutInformationExtended->PartitionEntry[i].PartitionNumber;
 
-					FoundPartition = TRUE;
-					break;
-				}
-			}
-		}
+                    FoundPartition = TRUE;
+                    break;
+                }
+            }
+        }
 
-		WdfObjectDelete(IOCTLRequestMemoryBuffer);
-		IOCTLRequestMemoryBuffer = NULL;
+        WdfObjectDelete(IOCTLRequestMemoryBuffer);
+        IOCTLRequestMemoryBuffer = NULL;
 
-		WdfObjectDelete(Request);
-		Request = NULL;
+        WdfObjectDelete(Request);
+        Request = NULL;
 
-		WdfIoTargetClose(IOTarget);
-		WdfObjectDelete(IOTarget);
-		IOTarget = NULL;
+        WdfIoTargetClose(IOTarget);
+        WdfObjectDelete(IOTarget);
+        IOTarget = NULL;
 
-		ExFreePool(DevicePath);
-		DevicePath = NULL;
-	} while ((FoundPartition == FALSE) && (HardDiskNumber++ < MAXIMUM_NUMBERS_OF_LUNS));
+        ExFreePool(DevicePath);
+        DevicePath = NULL;
+    } while ((FoundPartition == FALSE) && (HardDiskNumber++ < MAXIMUM_NUMBERS_OF_LUNS));
 
-	if (FoundPartition == TRUE)
-	{
-		status = RtlStringCbPrintfW(VolumePath, VolumePathLength * sizeof(WCHAR), L"\\Device\\Harddisk%u\\Partition%u\\", HardDiskNumber, PartitionNumber);
-	}
-	else
-	{
-		status = STATUS_UNSUCCESSFUL;
-	}
+    if (FoundPartition == TRUE)
+    {
+        status = RtlStringCbPrintfW(
+            VolumePath,
+            VolumePathLength * sizeof(WCHAR),
+            L"\\Device\\Harddisk%u\\Partition%u\\",
+            HardDiskNumber,
+            PartitionNumber);
+    }
+    else
+    {
+        status = STATUS_UNSUCCESSFUL;
+    }
 
 exit:
-	if (IOCTLRequestMemoryBuffer != NULL)
-	{
-		WdfObjectDelete(IOCTLRequestMemoryBuffer);
-	}
+    if (IOCTLRequestMemoryBuffer != NULL)
+    {
+        WdfObjectDelete(IOCTLRequestMemoryBuffer);
+    }
 
-	if (Request != NULL)
-	{
-		WdfObjectDelete(Request);
-	}
+    if (Request != NULL)
+    {
+        WdfObjectDelete(Request);
+    }
 
-	if (IOTarget != NULL)
-	{
-		WdfIoTargetClose(IOTarget);
-		WdfObjectDelete(IOTarget);
-	}
+    if (IOTarget != NULL)
+    {
+        WdfIoTargetClose(IOTarget);
+        WdfObjectDelete(IOTarget);
+    }
 
-	if (DevicePath != NULL)
-	{
-		ExFreePool(DevicePath);
-	}
+    if (DevicePath != NULL)
+    {
+        ExFreePool(DevicePath);
+    }
 
-	return status;
+    return status;
 }

@@ -24,7 +24,10 @@
         WPP_DEFINE_BIT(TRACE_SAMPLES)       \
         WPP_DEFINE_BIT(TRACE_OTHER)         \
         WPP_DEFINE_BIT(TRACE_IDLE)          \
-		WPP_DEFINE_BIT(TRACE_DRIVER)		\
+        WPP_DEFINE_BIT(TRACE_DRIVER)        \
+        WPP_DEFINE_BIT(TRACE_QCFS)          \
+        WPP_DEFINE_BIT(TRACE_SFPD)          \
+        WPP_DEFINE_BIT(TRACE_FILESYSTEM)    \
         )
 
 #define WPP_FLAG_LEVEL_LOGGER(flag, level)                                  \
