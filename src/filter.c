@@ -22,8 +22,16 @@
 #pragma alloc_text (PAGE, OnDeviceAdd)
 #pragma alloc_text (PAGE, OnInternalDeviceControl)
 #pragma alloc_text (PAGE, OnContextCleanup)
-#pragma alloc_text (PAGE, OnRequestCompletionRoutine)
 #endif
+
+typedef struct _REQUEST_CONTEXT
+{
+    ULONG InputBufferLength;
+} REQUEST_CONTEXT;
+
+WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(
+    REQUEST_CONTEXT,
+    GetRequestContext);
 
 NTSTATUS
 DriverEntry(
@@ -133,6 +141,16 @@ Return Value:
 	//
 	WdfFdoInitSetFilter(DeviceInit);
 
+	WDF_OBJECT_ATTRIBUTES attributes;
+
+	WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(
+		&attributes,
+		REQUEST_CONTEXT);
+
+	WdfDeviceInitSetRequestAttributes(
+		DeviceInit,
+		&attributes);
+
 	status = WdfDeviceCreate(
 		&DeviceInit,
 		WDF_NO_OBJECT_ATTRIBUTES,
@@ -205,8 +223,8 @@ VOID OnIoDeviceControl(
 	Trace(
 		TRACE_LEVEL_ERROR,
 		TRACE_INIT,
-		"OnIoDeviceControl: OutputBufferLength: %d, InputBufferLength: %d, IoControlCode: %d\n",
-		(int)OutputBufferLength, (int)InputBufferLength, IoControlCode);
+		"OnIoDeviceControl: OutputBufferLength: %Iu, InputBufferLength: %Iu, IoControlCode: 0x%08X\n",
+		OutputBufferLength, InputBufferLength, IoControlCode);
 
 	//
 	// Please note that QCSOCPartition provides the buffer in the Irp->UserBuffer
@@ -217,21 +235,23 @@ VOID OnIoDeviceControl(
 	// use retreive function or escape to WDM to get the UserBuffer.
 	//
 
-	//switch (IoControlCode) {
-	//case 0:
+	switch (IoControlCode) {
+	case 0xECAF32C2:
+	case 0xECAF32C6:
+	case 0xECAF32CE:
 		//
 		// Obtains the report descriptor for the HID device
 		//
-	forwardWithCompletionRoutine = TRUE;
-	Trace(
-		TRACE_LEVEL_ERROR,
-		TRACE_INIT,
-		"OnIoDeviceControl: forwardWithCompletionRoutine = TRUE!\n");
-	//    break;
-	//
-	//default:
-	//    break;
-	//}
+		forwardWithCompletionRoutine = TRUE;
+		Trace(
+			TRACE_LEVEL_ERROR,
+			TRACE_INIT,
+			"OnIoDeviceControl: forwardWithCompletionRoutine = TRUE!\n");
+	    break;
+	
+	default:
+	    break;
+	}
 
 	//
 	// Forward the request down. WdfDeviceGetIoTarget returns
@@ -299,6 +319,9 @@ VOID OnIoDeviceControl(
 			return;
 		}
 
+		REQUEST_CONTEXT* context = GetRequestContext(Request);
+		context->InputBufferLength = InputBufferLength;
+
 		//
 		// Set our completion routine with a context area that we will save
 		// the output data into
@@ -306,7 +329,7 @@ VOID OnIoDeviceControl(
 		WdfRequestSetCompletionRoutine(
 			Request,
 			OnRequestCompletionRoutine,
-			&InputBufferLength);
+			context);
 
 		requestSent = WdfRequestSend(
 			Request,
@@ -368,22 +391,26 @@ Return Value:
 
 --*/
 {
-	NTSTATUS status = STATUS_UNSUCCESSFUL;
+    NTSTATUS status = STATUS_UNSUCCESSFUL;
+    NTSTATUS filterStatus;
+
+    PUCHAR inputBuffer = NULL;
+    PUCHAR outputBuffer = NULL;
 
 	if (Params == NULL)
 	{
-		goto exit;
+		goto cleanup;
 	}
 
 	if (Context == NULL)
 	{
-		goto exit;
+		goto cleanup;
 	}
 
 	WDFDEVICE device = WdfIoTargetGetDevice(Target);
 	if (device == NULL)
 	{
-		goto exit;
+		goto cleanup;
 	}
 
 	// The result of the IOCTL call to the SOCPartition driver
@@ -396,17 +423,17 @@ Return Value:
 	WDFMEMORY outputMemory = Params->Parameters.Ioctl.Output.Buffer;
 
 	// The length of the input buffer sent to SOCPartition
-	ULONG inputBufferLength = *(PULONG)Context;
+	ULONG inputBufferLength = ((REQUEST_CONTEXT*)Context)->InputBufferLength;
 
 	// The length of the output buffer sent to SOCPartition
 	ULONG outputBufferLength = (ULONG)Params->Parameters.Ioctl.Output.Length;
 
-	DWORD IoControlCode = Params->Parameters.Ioctl.IoControlCode;
+	ULONG IoControlCode = Params->Parameters.Ioctl.IoControlCode;
 
 	// Check the for the buffer lengths, which must be at least 296 respectively (header structure)
 	if (inputBufferLength < 296 || outputBufferLength < 296)
 	{
-		goto exit;
+		goto cleanup;
 	}
 
 	if (IoControlCode != 0xECAF32C2 && // ReadFile
@@ -414,11 +441,8 @@ Return Value:
 		IoControlCode != 0xECAF32C6) // GetFileProperty
 	{
 		// We only handle above IOCTLs. If it doesn't match, return now.
-		goto exit;
+		goto cleanup;
 	}
-
-	PUCHAR inputBuffer = NULL;
-	PUCHAR outputBuffer = NULL;
 
 	Trace(
 		TRACE_LEVEL_ERROR,
@@ -434,15 +458,17 @@ Return Value:
 		HID_DESCRIPTOR_POOL_TAG);
 
 	if (NULL == inputBuffer) {
+    	status = STATUS_INSUFFICIENT_RESOURCES;
+
 		Trace(
 			TRACE_LEVEL_ERROR,
 			TRACE_INIT,
 			"Could not allocate input buffer!");
 
-		goto exit;
+    	goto cleanup;
 	}
 
-	NTSTATUS filterStatus = WdfMemoryCopyToBuffer(
+	filterStatus = WdfMemoryCopyToBuffer(
 		inputMemory,
 		Params->Parameters.Ioctl.Input.Offset,
 		inputBuffer,
@@ -455,8 +481,8 @@ Return Value:
 			"WdfMemoryCopyToBuffer failed: 0x%x\n",
 			filterStatus);
 
-		ExFreePoolWithTag(inputBuffer, HID_DESCRIPTOR_POOL_TAG);
-		goto exit;
+		status = filterStatus;
+		goto cleanup;
 	}
 
 	// Retrieve the output buffer, as an array of BYTE
@@ -466,14 +492,14 @@ Return Value:
 		HID_DESCRIPTOR_POOL_TAG);
 
 	if (NULL == outputBuffer) {
+    	status = STATUS_INSUFFICIENT_RESOURCES;
+
 		Trace(
 			TRACE_LEVEL_ERROR,
 			TRACE_INIT,
 			"Could not allocate output buffer!");
 
-		// Free the previously allocated input buffer
-		ExFreePoolWithTag(inputBuffer, HID_DESCRIPTOR_POOL_TAG);
-		goto exit;
+		goto cleanup;
 	}
 
 	filterStatus = WdfMemoryCopyToBuffer(
@@ -483,27 +509,23 @@ Return Value:
 		outputBufferLength);
 
 	if (!NT_SUCCESS(filterStatus)) {
+    	status = filterStatus;
+
 		Trace(
 			TRACE_LEVEL_ERROR,
 			TRACE_INIT,
 			"WdfMemoryCopyToBuffer failed: 0x%x\n",
 			filterStatus);
 
-		ExFreePoolWithTag(outputBuffer, HID_DESCRIPTOR_POOL_TAG);
-
-		// Free the previously allocated input buffer
-		ExFreePoolWithTag(inputBuffer, HID_DESCRIPTOR_POOL_TAG);
-		goto exit;
+		goto cleanup;
 	}
 
 	// Check the output buffer provided IOCTL, it must match the input.
-	DWORD OutputBufferIOCTL = *(DWORD*)(outputBuffer);
+	ULONG OutputBufferIOCTL = *(ULONG*)(outputBuffer);
 
 	if (OutputBufferIOCTL != IoControlCode)
 	{
-		ExFreePoolWithTag(outputBuffer, HID_DESCRIPTOR_POOL_TAG);
-		ExFreePoolWithTag(inputBuffer, HID_DESCRIPTOR_POOL_TAG);
-		goto exit;
+		goto cleanup;
 	}
 
 	// Now check the output buffer provided return code.
@@ -512,9 +534,7 @@ Return Value:
 
 	if (NT_SUCCESS(OutputBufferStatus))
 	{
-		ExFreePoolWithTag(outputBuffer, HID_DESCRIPTOR_POOL_TAG);
-		ExFreePoolWithTag(inputBuffer, HID_DESCRIPTOR_POOL_TAG);
-		goto exit;
+		goto cleanup;
 	}
 
 	// We know that we have a non successful valid request to SOCPartition at the moment.
@@ -536,7 +556,7 @@ Return Value:
 				RtlZeroMemory(outputBuffer, outputBufferLength);
 
 				// IOCTL
-				*(DWORD*)(outputBuffer) = IoControlCode;
+				*(ULONG*)(outputBuffer) = IoControlCode;
 
 				// Status
 				*(NTSTATUS*)(outputBuffer + 4) = STATUS_BUFFER_TOO_SMALL;
@@ -551,7 +571,7 @@ Return Value:
 				RtlZeroMemory(outputBuffer, outputBufferLength);
 
 				// IOCTL
-				*(DWORD*)(outputBuffer) = IoControlCode;
+				*(ULONG*)(outputBuffer) = IoControlCode;
 
 				// Status
 				*(NTSTATUS*)(outputBuffer + 4) = STATUS_SUCCESS;
@@ -576,7 +596,7 @@ Return Value:
 				RtlZeroMemory(outputBuffer, outputBufferLength);
 
 				// IOCTL
-				*(DWORD*)(outputBuffer) = IoControlCode;
+				*(ULONG*)(outputBuffer) = IoControlCode;
 
 				// Status
 				*(NTSTATUS*)(outputBuffer + 4) = STATUS_BUFFER_TOO_SMALL;
@@ -591,7 +611,7 @@ Return Value:
 				RtlZeroMemory(outputBuffer, outputBufferLength);
 
 				// IOCTL
-				*(DWORD*)(outputBuffer) = IoControlCode;
+				*(ULONG*)(outputBuffer) = IoControlCode;
 
 				// Status
 				*(NTSTATUS*)(outputBuffer + 4) = STATUS_SUCCESS;
@@ -616,7 +636,7 @@ Return Value:
 				RtlZeroMemory(outputBuffer, outputBufferLength);
 
 				// IOCTL
-				*(DWORD*)(outputBuffer) = IoControlCode;
+				*(ULONG*)(outputBuffer) = IoControlCode;
 
 				// Status
 				*(NTSTATUS*)(outputBuffer + 4) = STATUS_BUFFER_TOO_SMALL;
@@ -631,7 +651,7 @@ Return Value:
 				RtlZeroMemory(outputBuffer, outputBufferLength);
 
 				// IOCTL
-				*(DWORD*)(outputBuffer) = IoControlCode;
+				*(ULONG*)(outputBuffer) = IoControlCode;
 
 				// Status
 				*(NTSTATUS*)(outputBuffer + 4) = STATUS_SUCCESS;
@@ -645,19 +665,31 @@ Return Value:
 				// Fill in the real BT MAC
 				BYTE BT_NV[9] = { 0 };
 
+				BYTE LocalBtProvision[sizeof(BT_PROVISION)];
+
+				RtlCopyMemory(
+					LocalBtProvision,
+					BT_PROVISION,
+					sizeof(BT_PROVISION));
+
 				filterStatus = GetSFPDItem(device, BT_NV_FILE_PATH, BT_NV, sizeof(BT_NV));
 				if (NT_SUCCESS(filterStatus))
 				{
-					BT_PROVISION[2] = BT_NV[8];
-					BT_PROVISION[3] = BT_NV[7];
-					BT_PROVISION[4] = BT_NV[6];
-					BT_PROVISION[5] = BT_NV[5];
-					BT_PROVISION[6] = BT_NV[4];
-					BT_PROVISION[7] = BT_NV[3];
+					LocalBtProvision[2] = BT_NV[8];
+					LocalBtProvision[3] = BT_NV[7];
+					LocalBtProvision[4] = BT_NV[6];
+					LocalBtProvision[5] = BT_NV[5];
+					LocalBtProvision[6] = BT_NV[4];
+					LocalBtProvision[7] = BT_NV[3];
+				}
+				else
+				{
+					status = filterStatus;
+					goto cleanup;
 				}
 
 				// File Data
-				RtlCopyMemory(outputBuffer + 20, BT_PROVISION, sizeof(BT_PROVISION));
+				RtlCopyMemory(outputBuffer + 20, LocalBtProvision, sizeof(LocalBtProvision));
 			}
 		}
 		// Sensor files
@@ -666,23 +698,23 @@ Return Value:
 			WCHAR SensorFilePath[92 + (sizeof(SENSOR_DATA_DIRECTORY) - sizeof(WCHAR)) / sizeof(WCHAR)] = SENSOR_DATA_DIRECTORY;
 			RtlCopyMemory(SensorFilePath + (sizeof(SENSOR_DATA_DIRECTORY) - sizeof(WCHAR)) / sizeof(WCHAR), FilePath + 4, 92);
 
-			DWORD ItemSize = 0;
+			SensorFilePath[
+				RTL_NUMBER_OF(SensorFilePath) - 1
+			] = UNICODE_NULL;
+
+			ULONG ItemSize = 0;
 
 			if (device == NULL)
 			{
-				ExFreePoolWithTag(outputBuffer, HID_DESCRIPTOR_POOL_TAG);
-				ExFreePoolWithTag(inputBuffer, HID_DESCRIPTOR_POOL_TAG);
-				goto exit;
+				goto cleanup;
 			}
 
 			filterStatus = GetSFPDItemSize(device, SensorFilePath, &ItemSize);
 
 			if (!NT_SUCCESS(filterStatus))
 			{
-
-				ExFreePoolWithTag(outputBuffer, HID_DESCRIPTOR_POOL_TAG);
-				ExFreePoolWithTag(inputBuffer, HID_DESCRIPTOR_POOL_TAG);
-				goto exit;
+				status = filterStatus;
+				goto cleanup;
 			}
 
 			// Size is not enough
@@ -693,7 +725,7 @@ Return Value:
 				RtlZeroMemory(outputBuffer, outputBufferLength);
 
 				// IOCTL
-				*(DWORD*)(outputBuffer) = IoControlCode;
+				*(ULONG*)(outputBuffer) = IoControlCode;
 
 				// Status
 				*(NTSTATUS*)(outputBuffer + 4) = STATUS_BUFFER_TOO_SMALL;
@@ -708,7 +740,7 @@ Return Value:
 				RtlZeroMemory(outputBuffer, outputBufferLength);
 
 				// IOCTL
-				*(DWORD*)(outputBuffer) = IoControlCode;
+				*(ULONG*)(outputBuffer) = IoControlCode;
 
 				// Status
 				*(NTSTATUS*)(outputBuffer + 4) = STATUS_SUCCESS;
@@ -723,9 +755,8 @@ Return Value:
 
 				if (!NT_SUCCESS(filterStatus))
 				{
-					ExFreePoolWithTag(outputBuffer, HID_DESCRIPTOR_POOL_TAG);
-					ExFreePoolWithTag(inputBuffer, HID_DESCRIPTOR_POOL_TAG);
-					goto exit;
+					status = filterStatus;
+					goto cleanup;
 				}
 			}
 		}
@@ -736,7 +767,7 @@ Return Value:
 			RtlZeroMemory(outputBuffer, outputBufferLength);
 
 			// IOCTL
-			*(DWORD*)(outputBuffer) = IoControlCode;
+			*(ULONG*)(outputBuffer) = IoControlCode;
 
 			// Status
 			*(NTSTATUS*)(outputBuffer + 4) = STATUS_FILE_NOT_AVAILABLE;
@@ -763,7 +794,7 @@ Return Value:
 				RtlZeroMemory(outputBuffer, outputBufferLength);
 
 				// IOCTL
-				*(DWORD*)(outputBuffer) = IoControlCode;
+				*(ULONG*)(outputBuffer) = IoControlCode;
 
 				// Status
 				*(NTSTATUS*)(outputBuffer + 4) = STATUS_BUFFER_TOO_SMALL;
@@ -778,7 +809,7 @@ Return Value:
 				RtlZeroMemory(outputBuffer, outputBufferLength);
 
 				// IOCTL
-				*(DWORD*)(outputBuffer) = IoControlCode;
+				*(ULONG*)(outputBuffer) = IoControlCode;
 
 				// Status
 				*(NTSTATUS*)(outputBuffer + 4) = STATUS_SUCCESS;
@@ -792,18 +823,25 @@ Return Value:
 				// Fill in the real BT MAC
 				BYTE WLAN_MAC[33] = { 0 };
 
+				BYTE LocalWlanProvision[sizeof(WLAN_PROVISION)];
+
+				RtlCopyMemory(
+					LocalWlanProvision,
+					WLAN_PROVISION,
+					sizeof(WLAN_PROVISION));
+
 				filterStatus = GetSFPDItem(device, WLAN_MAC_FILE_PATH, WLAN_MAC, sizeof(WLAN_MAC));
 				if (NT_SUCCESS(filterStatus))
 				{
 					BYTE MAC_ADDRESS[6] = { 0 };
 
-					for (DWORD i = 0; i < sizeof(MAC_ADDRESS); i++)
+					for (ULONG i = 0; i < sizeof(MAC_ADDRESS); i++)
 					{
-						DWORD HighIndex = 16 + i * 2;
-						DWORD LowIndex = 16 + (i * 2) + 1;
+						ULONG HighIndex = 16 + i * 2;
+						ULONG LowIndex = 16 + (i * 2) + 1;
 
-						DWORD ByteHigh = WLAN_MAC[HighIndex];
-						DWORD ByteLow = WLAN_MAC[LowIndex];
+						ULONG ByteHigh = WLAN_MAC[HighIndex];
+						ULONG ByteLow = WLAN_MAC[LowIndex];
 
 						if (0x30 <= ByteHigh && ByteHigh <= 0x39)
 						{
@@ -832,17 +870,22 @@ Return Value:
 						}
 					}
 
-					WLAN_PROVISION[3] = MAC_ADDRESS[0];
-					WLAN_PROVISION[4] = MAC_ADDRESS[1];
-					WLAN_PROVISION[5] = MAC_ADDRESS[2];
-					WLAN_PROVISION[6] = MAC_ADDRESS[3];
-					WLAN_PROVISION[7] = MAC_ADDRESS[4];
-					WLAN_PROVISION[8] = MAC_ADDRESS[5];
+					LocalWlanProvision[3] = MAC_ADDRESS[0];
+					LocalWlanProvision[4] = MAC_ADDRESS[1];
+					LocalWlanProvision[5] = MAC_ADDRESS[2];
+					LocalWlanProvision[6] = MAC_ADDRESS[3];
+					LocalWlanProvision[7] = MAC_ADDRESS[4];
+					LocalWlanProvision[8] = MAC_ADDRESS[5];
+				}
+				else
+				{
+					status = filterStatus;
+					goto cleanup;
 				}
 
 skip_mac:
 				// File Data
-				RtlCopyMemory(outputBuffer + 20, WLAN_PROVISION, sizeof(WLAN_PROVISION));
+				RtlCopyMemory(outputBuffer + 20, LocalWlanProvision, sizeof(LocalWlanProvision));
 			}
 		}
 		else if (RtlCompareMemory(L"QCOM\\WLAN_CLPC.PROVISION", FilePath, sizeof(L"QCOM\\WLAN_CLPC.PROVISION")) == sizeof(L"QCOM\\WLAN_CLPC.PROVISION"))
@@ -855,7 +898,7 @@ skip_mac:
 				RtlZeroMemory(outputBuffer, outputBufferLength);
 
 				// IOCTL
-				*(DWORD*)(outputBuffer) = IoControlCode;
+				*(ULONG*)(outputBuffer) = IoControlCode;
 
 				// Status
 				*(NTSTATUS*)(outputBuffer + 4) = STATUS_BUFFER_TOO_SMALL;
@@ -870,7 +913,7 @@ skip_mac:
 				RtlZeroMemory(outputBuffer, outputBufferLength);
 
 				// IOCTL
-				*(DWORD*)(outputBuffer) = IoControlCode;
+				*(ULONG*)(outputBuffer) = IoControlCode;
 
 				// Status
 				*(NTSTATUS*)(outputBuffer + 4) = STATUS_SUCCESS;
@@ -895,7 +938,7 @@ skip_mac:
 				// IOCTL
 				RtlZeroMemory(outputBuffer, outputBufferLength);
 
-				*(DWORD*)(outputBuffer) = IoControlCode;
+				*(ULONG*)(outputBuffer) = IoControlCode;
 
 				// Status
 				*(NTSTATUS*)(outputBuffer + 4) = STATUS_BUFFER_TOO_SMALL;
@@ -910,7 +953,7 @@ skip_mac:
 				RtlZeroMemory(outputBuffer, outputBufferLength);
 
 				// IOCTL
-				*(DWORD*)(outputBuffer) = IoControlCode;
+				*(ULONG*)(outputBuffer) = IoControlCode;
 
 				// Status
 				*(NTSTATUS*)(outputBuffer + 4) = STATUS_SUCCESS;
@@ -928,9 +971,7 @@ skip_mac:
 		else
 		{
 			// We do not support anything else currently.
-			ExFreePoolWithTag(outputBuffer, HID_DESCRIPTOR_POOL_TAG);
-			ExFreePoolWithTag(inputBuffer, HID_DESCRIPTOR_POOL_TAG);
-			goto exit;
+			goto cleanup;
 		}
 
 		break;
@@ -938,38 +979,41 @@ skip_mac:
 	case 0xECAF32CE: // ListDirectoryFiles
 	{
 		PWCHAR FilePath = (PWCHAR)(inputBuffer + 88); // 96 size
-		DWORD FileSystemProperty = *(PDWORD)(inputBuffer + 284);
+		ULONG FileSystemProperty = *(PULONG)(inputBuffer + 284);
 
 		if (FileSystemProperty != 10)
 		{
 			// We only support number of files currently
-			ExFreePoolWithTag(outputBuffer, HID_DESCRIPTOR_POOL_TAG);
-			ExFreePoolWithTag(inputBuffer, HID_DESCRIPTOR_POOL_TAG);
-			goto exit;
+			goto cleanup;
 		}
 
 		if (RtlCompareMemory(L"JSON", FilePath, sizeof(L"JSON")) == sizeof(L"JSON"))
 		{
-			DWORD NumberOfFiles = 0;
+			ULONG NumberOfFiles = 0;
 
 			if (device == NULL)
 			{
-				ExFreePoolWithTag(outputBuffer, HID_DESCRIPTOR_POOL_TAG);
-				ExFreePoolWithTag(inputBuffer, HID_DESCRIPTOR_POOL_TAG);
-				goto exit;
+				goto cleanup;
 			}
 
 			filterStatus = GetSFPDNumberOfFilesInDirectory(device, SENSOR_DATA_DIRECTORY, &NumberOfFiles);
 
 			if (!NT_SUCCESS(filterStatus))
 			{
-
-				ExFreePoolWithTag(outputBuffer, HID_DESCRIPTOR_POOL_TAG);
-				ExFreePoolWithTag(inputBuffer, HID_DESCRIPTOR_POOL_TAG);
-				goto exit;
+				status = filterStatus;
+				goto cleanup;
 			}
 
-			DWORD TotalNeededBufferSize = NumberOfFiles * 244;
+			ULONG TotalNeededBufferSize;
+			status = RtlULongMult(
+				NumberOfFiles,
+				244,
+				&TotalNeededBufferSize);
+
+			if (!NT_SUCCESS(status))
+			{
+				goto cleanup;
+			}
 
 			// Buffer too small
 			if (outputBufferLength < 296 + TotalNeededBufferSize)
@@ -979,7 +1023,7 @@ skip_mac:
 				RtlZeroMemory(outputBuffer, outputBufferLength);
 
 				// IOCTL
-				*(DWORD*)(outputBuffer) = IoControlCode;
+				*(ULONG*)(outputBuffer) = IoControlCode;
 
 				// Status
 				*(NTSTATUS*)(outputBuffer + 4) = STATUS_BUFFER_TOO_SMALL;
@@ -994,7 +1038,7 @@ skip_mac:
 				RtlZeroMemory(outputBuffer, outputBufferLength);
 
 				// IOCTL
-				*(DWORD*)(outputBuffer) = IoControlCode;
+				*(ULONG*)(outputBuffer) = IoControlCode;
 
 				// Status
 				*(NTSTATUS*)(outputBuffer + 4) = STATUS_SUCCESS;
@@ -1010,19 +1054,15 @@ skip_mac:
 
 				if (!NT_SUCCESS(filterStatus))
 				{
-
-					ExFreePoolWithTag(outputBuffer, HID_DESCRIPTOR_POOL_TAG);
-					ExFreePoolWithTag(inputBuffer, HID_DESCRIPTOR_POOL_TAG);
-					goto exit;
+					status = filterStatus;
+					goto cleanup;
 				}
 			}
 		}
 		else
 		{
 			// We do not support anything else currently.
-			ExFreePoolWithTag(outputBuffer, HID_DESCRIPTOR_POOL_TAG);
-			ExFreePoolWithTag(inputBuffer, HID_DESCRIPTOR_POOL_TAG);
-			goto exit;
+			goto cleanup;
 		}
 
 		break;
@@ -1030,32 +1070,29 @@ skip_mac:
 	case 0xECAF32C6: // GetFileProperty
 	{
 		PWCHAR FilePath = (PWCHAR)(inputBuffer + 88); // 96 size
-		DWORD FileProperty = *(PDWORD)(inputBuffer + 280);
+		ULONG FileProperty = *(PULONG)(inputBuffer + 280);
 
 		if (FileProperty != 2)
 		{
 			// We only support actual file size currently
-
-			ExFreePoolWithTag(outputBuffer, HID_DESCRIPTOR_POOL_TAG);
-			ExFreePoolWithTag(inputBuffer, HID_DESCRIPTOR_POOL_TAG);
-			goto exit;
+			goto cleanup;
 		}
 
 		// Buffer too small
-		if (outputBufferLength < 296 + sizeof(DWORD))
+		if (outputBufferLength < 296 + sizeof(ULONG))
 		{
 			status = STATUS_SUCCESS;
 
 			RtlZeroMemory(outputBuffer, outputBufferLength);
 
 			// IOCTL
-			*(DWORD*)(outputBuffer) = IoControlCode;
+			*(ULONG*)(outputBuffer) = IoControlCode;
 
 			// Status
 			*(NTSTATUS*)(outputBuffer + 4) = STATUS_BUFFER_TOO_SMALL;
 
 			// Needed Buffer Size
-			*(ULONG*)(outputBuffer + 8) = sizeof(DWORD);
+			*(ULONG*)(outputBuffer + 8) = sizeof(ULONG);
 		}
 		else
 		{
@@ -1066,7 +1103,7 @@ skip_mac:
 				// IOCTL
 				RtlZeroMemory(outputBuffer, outputBufferLength);
 
-				*(DWORD*)(outputBuffer) = IoControlCode;
+				*(ULONG*)(outputBuffer) = IoControlCode;
 
 				// Status
 				*(NTSTATUS*)(outputBuffer + 4) = STATUS_SUCCESS;
@@ -1075,7 +1112,7 @@ skip_mac:
 				*(ULONG*)(outputBuffer + 8) = 0;
 
 				// Data Size
-				*(ULONG*)(outputBuffer + 16) = sizeof(DWORD);
+				*(ULONG*)(outputBuffer + 16) = sizeof(ULONG);
 
 				// File Size
 				*(ULONG*)(outputBuffer + 20) = sizeof(BT_NVMTAG36_PROVISION);
@@ -1087,7 +1124,7 @@ skip_mac:
 				RtlZeroMemory(outputBuffer, outputBufferLength);
 
 				// IOCTL
-				*(DWORD*)(outputBuffer) = IoControlCode;
+				*(ULONG*)(outputBuffer) = IoControlCode;
 
 				// Status
 				*(NTSTATUS*)(outputBuffer + 4) = STATUS_SUCCESS;
@@ -1096,7 +1133,7 @@ skip_mac:
 				*(ULONG*)(outputBuffer + 8) = 0;
 
 				// Data Size
-				*(ULONG*)(outputBuffer + 16) = sizeof(DWORD);
+				*(ULONG*)(outputBuffer + 16) = sizeof(ULONG);
 
 				// File Size
 				*(ULONG*)(outputBuffer + 20) = sizeof(BT_NVMTAG83_PROVISION);
@@ -1108,7 +1145,7 @@ skip_mac:
 				RtlZeroMemory(outputBuffer, outputBufferLength);
 
 				// IOCTL
-				*(DWORD*)(outputBuffer) = IoControlCode;
+				*(ULONG*)(outputBuffer) = IoControlCode;
 
 				// Status
 				*(NTSTATUS*)(outputBuffer + 4) = STATUS_SUCCESS;
@@ -1117,7 +1154,7 @@ skip_mac:
 				*(ULONG*)(outputBuffer + 8) = 0;
 
 				// Data Size
-				*(ULONG*)(outputBuffer + 16) = sizeof(DWORD);
+				*(ULONG*)(outputBuffer + 16) = sizeof(ULONG);
 
 				// File Size
 				*(ULONG*)(outputBuffer + 20) = sizeof(BT_PROVISION);
@@ -1128,22 +1165,23 @@ skip_mac:
 				WCHAR SensorFilePath[92 + (sizeof(SENSOR_DATA_DIRECTORY) - sizeof(WCHAR)) / sizeof(WCHAR)] = SENSOR_DATA_DIRECTORY;
 				RtlCopyMemory(SensorFilePath + (sizeof(SENSOR_DATA_DIRECTORY) - sizeof(WCHAR)) / sizeof(WCHAR), FilePath + 4, 92);
 
-				DWORD ItemSize = 0;
+				SensorFilePath[
+					RTL_NUMBER_OF(SensorFilePath) - 1
+				] = UNICODE_NULL;
+
+				ULONG ItemSize = 0;
 
 				if (device == NULL)
 				{
-					ExFreePoolWithTag(outputBuffer, HID_DESCRIPTOR_POOL_TAG);
-					ExFreePoolWithTag(inputBuffer, HID_DESCRIPTOR_POOL_TAG);
-					goto exit;
+					goto cleanup;
 				}
 
 				filterStatus = GetSFPDItemSize(device, SensorFilePath, &ItemSize);
 
 				if (!NT_SUCCESS(filterStatus))
 				{
-					ExFreePoolWithTag(outputBuffer, HID_DESCRIPTOR_POOL_TAG);
-					ExFreePoolWithTag(inputBuffer, HID_DESCRIPTOR_POOL_TAG);
-					goto exit;
+					status = filterStatus;
+					goto cleanup;
 				}
 
 				status = STATUS_SUCCESS;
@@ -1151,7 +1189,7 @@ skip_mac:
 				RtlZeroMemory(outputBuffer, outputBufferLength);
 
 				// IOCTL
-				*(DWORD*)(outputBuffer) = IoControlCode;
+				*(ULONG*)(outputBuffer) = IoControlCode;
 
 				// Status
 				*(NTSTATUS*)(outputBuffer + 4) = STATUS_SUCCESS;
@@ -1160,7 +1198,7 @@ skip_mac:
 				*(ULONG*)(outputBuffer + 8) = 0;
 
 				// Data Size
-				*(ULONG*)(outputBuffer + 16) = sizeof(DWORD);
+				*(ULONG*)(outputBuffer + 16) = sizeof(ULONG);
 
 				// File Size
 				*(ULONG*)(outputBuffer + 20) = ItemSize;
@@ -1172,7 +1210,7 @@ skip_mac:
 				RtlZeroMemory(outputBuffer, outputBufferLength);
 
 				// IOCTL
-				*(DWORD*)(outputBuffer) = IoControlCode;
+				*(ULONG*)(outputBuffer) = IoControlCode;
 
 				// Status
 				*(NTSTATUS*)(outputBuffer + 4) = STATUS_FILE_NOT_AVAILABLE;
@@ -1193,7 +1231,7 @@ skip_mac:
 				RtlZeroMemory(outputBuffer, outputBufferLength);
 
 				// IOCTL
-				*(DWORD*)(outputBuffer) = IoControlCode;
+				*(ULONG*)(outputBuffer) = IoControlCode;
 
 				// Status
 				*(NTSTATUS*)(outputBuffer + 4) = STATUS_SUCCESS;
@@ -1202,7 +1240,7 @@ skip_mac:
 				*(ULONG*)(outputBuffer + 8) = 0;
 
 				// Data Size
-				*(ULONG*)(outputBuffer + 16) = sizeof(DWORD);
+				*(ULONG*)(outputBuffer + 16) = sizeof(ULONG);
 
 				// File Size
 				*(ULONG*)(outputBuffer + 20) = sizeof(WLAN_PROVISION);
@@ -1214,7 +1252,7 @@ skip_mac:
 				RtlZeroMemory(outputBuffer, outputBufferLength);
 
 				// IOCTL
-				*(DWORD*)(outputBuffer) = IoControlCode;
+				*(ULONG*)(outputBuffer) = IoControlCode;
 
 				// Status
 				*(NTSTATUS*)(outputBuffer + 4) = STATUS_SUCCESS;
@@ -1223,7 +1261,7 @@ skip_mac:
 				*(ULONG*)(outputBuffer + 8) = 0;
 
 				// Data Size
-				*(ULONG*)(outputBuffer + 16) = sizeof(DWORD);
+				*(ULONG*)(outputBuffer + 16) = sizeof(ULONG);
 
 				// File Size
 				*(ULONG*)(outputBuffer + 20) = sizeof(WLAN_CLPC_PROVISION);
@@ -1235,7 +1273,7 @@ skip_mac:
 				RtlZeroMemory(outputBuffer, outputBufferLength);
 
 				// IOCTL
-				*(DWORD*)(outputBuffer) = IoControlCode;
+				*(ULONG*)(outputBuffer) = IoControlCode;
 
 				// Status
 				*(NTSTATUS*)(outputBuffer + 4) = STATUS_SUCCESS;
@@ -1244,7 +1282,7 @@ skip_mac:
 				*(ULONG*)(outputBuffer + 8) = 0;
 
 				// Data Size
-				*(ULONG*)(outputBuffer + 16) = sizeof(DWORD);
+				*(ULONG*)(outputBuffer + 16) = sizeof(ULONG);
 
 				// File Size
 				*(ULONG*)(outputBuffer + 20) = sizeof(WLAN_SAR2CFG_PROVISION);
@@ -1252,9 +1290,7 @@ skip_mac:
 			else
 			{
 				// We do not support anything else currently.
-				ExFreePoolWithTag(outputBuffer, HID_DESCRIPTOR_POOL_TAG);
-				ExFreePoolWithTag(inputBuffer, HID_DESCRIPTOR_POOL_TAG);
-				goto exit;
+				goto cleanup;
 			}
 		}
 
@@ -1272,26 +1308,38 @@ skip_mac:
 	);
 
 	if (!NT_SUCCESS(filterStatus)) {
+		status = filterStatus;
+
 		Trace(
 			TRACE_LEVEL_ERROR,
 			TRACE_INIT,
 			"WdfMemoryCopyFromBuffer failed: 0x%x\n",
 			filterStatus);
 
-		ExFreePoolWithTag(outputBuffer, HID_DESCRIPTOR_POOL_TAG);
-
-		// Free the previously allocated input buffer
-		ExFreePoolWithTag(inputBuffer, HID_DESCRIPTOR_POOL_TAG);
-		goto exit;
+		goto cleanup;
 	}
 
-	ExFreePoolWithTag(outputBuffer, HID_DESCRIPTOR_POOL_TAG);
-	ExFreePoolWithTag(inputBuffer, HID_DESCRIPTOR_POOL_TAG);
+cleanup:
 
-exit:
+    if (outputBuffer != NULL)
+    {
+        ExFreePoolWithTag(
+            outputBuffer,
+            HID_DESCRIPTOR_POOL_TAG);
+    }
 
-	WdfRequestComplete(Request, status);
-	return;
+    if (inputBuffer != NULL)
+    {
+        ExFreePoolWithTag(
+            inputBuffer,
+            HID_DESCRIPTOR_POOL_TAG);
+    }
+
+    WdfRequestComplete(
+        Request,
+        status);
+
+    return;
 }
 
 VOID
