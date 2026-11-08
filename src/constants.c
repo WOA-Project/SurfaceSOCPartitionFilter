@@ -1,13 +1,46 @@
 #include "constants.h"
 
-BYTE WLAN_SAR2CFG_PROVISION[42] = 
-{ 
-    0x2A, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
-    0x1A, 0xE0, 0x93, 0x04, 0x00, 0x10, 0x27, 0x00, 
-    0x00, 0x98, 0x3A, 0x00, 0x00, 0x01, 0x01, 0x01, 
-    0x01, 0x02, 0x02, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 
-    0x00, 0x01 
+WLAN_SAR2CFG_PROVISION_DATA WLAN_SAR2CFG_PROVISION =
+{
+    .HeaderSize                     = 42,
+    .Header1Offset                  = 0x10,
+    .Header2Offset                  = 0x00,
+    .WifiTech                       = 0x00,
+
+    .ProductId                      = 0x00,
+    .Version                        = 0x00,
+    .Revision                       = 0x00,
+    .NumSarTable                    = 0x0C,
+
+    .CompressStatus                 = 0x00,
+    .TimerFormat                    = 0x00,
+
+    .Reserved0                      = 0x00,
+    .Reserved1                      = 0x00,
+    .Reserved2                      = 0x00,
+    .Reserved3                      = 0x00,
+    .Reserved4                      = 0x00,
+    .Reserved5                      = 0x00,
+
+    .UEFIFlagsSize                  = 0x1A,
+
+    .SARSafetyTimer                 = 300000,  // 0x493E0
+    .SARSafetyRequestResponseTimeout= 10000,   // 0x2710
+    .SARUnsolicitedUpdateTimer      = 15000,   // 0x3A98
+
+    .SARState                       = 1,
+    .SleepModeState                 = 1,
+    .SARPowerOnState                = 1,
+    .SARPowerOnStateAfterFailure    = 1,
+
+    .SARSafetyTableIndex            = 2,
+    .SleepModeStateIndexTable       = 2,
+
+    .GeoLocationValue               = 0xFFFFFFFF,
+
+    .GeoCountryString               = { 0, 0 },
+
+    .SAREnableTestInterface         = 1
 };
 
 BYTE WLAN_CLPC_PROVISION[26328] =
@@ -3305,26 +3338,67 @@ BYTE WLAN_CLPC_PROVISION[26328] =
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
 
-BYTE WLAN_PROVISION[9] = 
+WLAN_PROVISION_DATA WLAN_PROVISION =
 {
-    0x01, 0x07, 0x01, 0x00, 0xDE, 0xAD, 0xBE, 0xEF,
-    0x00
+    .Version = 1,
+    .Length = 7,
+    .NoOfMACs = 1,
+
+    .StationAddress =
+    {
+        0x00,
+        0xDE,
+        0xAD,
+        0xBE,
+        0xEF,
+        0x00
+    }
 };
 
-BYTE BT_PROVISION[8] =
+BT_PROVISION_DATA BT_PROVISION =
 {
-    0x01, 0x06, 0x00, 0xDE, 0xAD, 0xBE, 0xEF, 0x01
+    .Version = 1,
+    .Length = 6,
+
+    .BDAddress =
+    {
+        0x00,
+        0xDE,
+        0xAD,
+        0xBE,
+        0xEF,
+        0x01
+    }
 };
 
-BYTE BT_NVMTAG83_PROVISION[10] =
+BT_NVMTAG83_PROVISION_DATA BT_NVMTAG83_PROVISION =
 {
-    0x53, 0x08, 0x08, 0x08, 0x08, 0x00, 0x01, 0x03,
-    0x06, 0x08
+    .TagNumber = 0x53,
+    .Length = 0x08,
+
+    .Data =
+    {
+        0x08, 0x08, 0x08, 0x00,
+        0x01, 0x03, 0x06, 0x08
+    }
 };
 
-BYTE BT_NVMTAG36_PROVISION[18] =
+BT_NVMTAG36_PROVISION_DATA BT_NVMTAG36_PROVISION =
 {
-    0x24, 0x10, 0xFF, 0x03, 0x0F, 0x07, 0x08, 0x08,
-    0x08, 0x00, 0x00, 0x09, 0x09, 0x04, 0x00, 0x04,
-    0x08, 0x00
+    .TagNumber = 0x24,
+    .Length = 0x10,
+
+    .Data =
+    {
+        0xFF, 0x03, 0x0F, 0x07,
+        0x08, 0x08, 0x08, 0x00,
+        0x00, 0x09, 0x09, 0x04,
+        0x00, 0x04, 0x08, 0x00
+    }
 };
+
+C_ASSERT(sizeof(BT_PROVISION_DATA) == 8);
+C_ASSERT(sizeof(WLAN_PROVISION_DATA) == 9);
+C_ASSERT(sizeof(BT_NVMTAG36_PROVISION_DATA) == 18);
+C_ASSERT(sizeof(BT_NVMTAG83_PROVISION_DATA) == 10);
+C_ASSERT(sizeof(WLAN_SAR2CFG_PROVISION) == 42);

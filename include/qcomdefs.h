@@ -16,6 +16,8 @@ Environment:
 
 --*/
 
+#pragma once
+
 #include <ntddk.h>
 #include <wdf.h>
 #include <initguid.h>
@@ -64,19 +66,36 @@ typedef struct _BT_NVMTAG83_PROVISION_DATA
 
 // WLAN.PROVISION
 
-#pragma pack(push)
-#pragma pack(1)
+#pragma pack(push, 1)
+
 typedef struct _WLAN_PROVISION_DATA
 {
-	BYTE Version;
-	BYTE Length;
-	BYTE NoOfMACs;
-	BYTE StationAddress[6];
-	BYTE PeerToPeerDeviceAddress[6]; // Optional, depends on NoOfMacs
-	BYTE PeerToPeerClientGoAddress1[6]; // Optional, depends on NoOfMacs
-	BYTE PeerToPeerClientGoAddress2[6]; // Optional, depends on NoOfMacs
-} WLAN_PROVISION_DATA, * PWLAN_PROVISION_DATA;
+    BYTE Version;
+    BYTE Length;
+    BYTE NoOfMACs;
+    BYTE StationAddress[6];
+} WLAN_PROVISION_DATA, *PWLAN_PROVISION_DATA;
+
 #pragma pack(pop)
+
+C_ASSERT(sizeof(WLAN_PROVISION_DATA) == 9);
+
+#pragma pack(push, 1)
+
+typedef struct _WLAN_PROVISION_EXTENDED
+{
+    WLAN_PROVISION_DATA Base;
+
+    BYTE PeerToPeerDeviceAddress[6];
+    BYTE PeerToPeerClientGoAddress1[6];
+    BYTE PeerToPeerClientGoAddress2[6];
+
+} WLAN_PROVISION_EXTENDED,
+ *PWLAN_PROVISION_EXTENDED;
+
+#pragma pack(pop)
+
+C_ASSERT(sizeof(WLAN_PROVISION_EXTENDED) == 27);
 
 // WLAN_CLPC.PROVISION Unknown
 

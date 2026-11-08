@@ -83,7 +83,7 @@ HandleBtProvision(_In_ PFILTER_CONTEXT Context, _In_ PCUNICODE_STRING Path)
 
     Trace(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "Building BT.PROVISION");
 
-    RtlCopyMemory(&Provision, BT_PROVISION, sizeof(Provision));
+    RtlCopyMemory(&Provision, &BT_PROVISION, sizeof(Provision));
 
     status = GetSFPDItem(Context->Device, BT_NV_FILE_PATH, BtNv, sizeof(BtNv));
     if (!NT_SUCCESS(status))
@@ -133,7 +133,7 @@ HandleWlanProvision(_In_ PFILTER_CONTEXT Context, _In_ PCUNICODE_STRING Path)
 
     Trace(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "Building WLAN.PROVISION");
 
-    RtlCopyMemory(&Provision, WLAN_PROVISION, sizeof(Provision));
+    RtlCopyMemory(&Provision, &WLAN_PROVISION, sizeof(Provision));
 
     status = GetSFPDItem(Context->Device, WLAN_MAC_FILE_PATH, RawMac, sizeof(RawMac));
 
